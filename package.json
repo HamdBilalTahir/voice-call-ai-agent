@@ -28,6 +28,7 @@
     "@livekit/agents-plugin-silero": "^1.0.48",
     "@livekit/components-react": "^2.6.9",
     "@livekit/components-styles": "^1.1.4",
+    "@livekit/rtc-node": "^0.13.24",
     "livekit-server-sdk": "^2.9.3",
     "next": "15.2.0",
     "react": "^19.0.0",

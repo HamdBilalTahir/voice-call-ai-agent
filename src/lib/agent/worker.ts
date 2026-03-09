@@ -73,5 +73,7 @@ export default defineAgent({
 
 if (require.main === module) {
   process.loadEnvFile();
-  cli.runApp(new ServerOptions({ agent: __filename }));
+  cli.runApp(
+    new ServerOptions({ agent: __filename, agentName: "voice-agent" }),
+  );
 }
