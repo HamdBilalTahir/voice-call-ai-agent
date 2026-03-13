@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { SipClient, AgentDispatchClient } from "livekit-server-sdk";
@@ -14,10 +15,13 @@ const agentDispatchClient = new AgentDispatchClient(
   process.env.LIVEKIT_API_SECRET!,
 );
 
+import { addCallRecord } from "@/lib/history";
+
 const outboundCallSchema = z.object({
   toNumber: z
     .string()
     .regex(/^\+[1-9]\d{1,14}$/, "Must be a valid E.164 phone number"),
+  agentKey: z.string().optional(),
 });
 
 export async function POST(req: Request) {
@@ -42,7 +46,7 @@ export async function POST(req: Request) {
       );
     }
 
-    const { toNumber } = parsed.data;
+    const { toNumber, agentKey } = parsed.data;
 
     // 3. Verify env vars are set
     let sipTrunkId = process.env.LIVEKIT_SIP_TRUNK_ID;
@@ -83,7 +87,8 @@ export async function POST(req: Request) {
 
     // 4. Generate unique room name and participant identity
     const timestamp = Date.now();
-    const roomName = `outbound-${toNumber}-${timestamp}`;
+    const prefix = agentKey ? `${agentKey}-` : "outbound-";
+    const roomName = `${prefix}${toNumber}-${timestamp}`;
     const participantIdentity = `phone-${toNumber}`;
 
     // 5. Create SIP participant (dispatch outbound call)
@@ -96,6 +101,17 @@ export async function POST(req: Request) {
 
     // 6. Dispatch the agent to the room so it joins and speaks
     await agentDispatchClient.createDispatch(roomName, "voice-agent");
+
+    // Add to history
+    if (agentKey) {
+      addCallRecord({
+        id: roomName,
+        agentKey,
+        phoneNumber: toNumber,
+        startTime: timestamp,
+        status: "in-progress",
+      });
+    }
 
     return NextResponse.json({
       success: true,

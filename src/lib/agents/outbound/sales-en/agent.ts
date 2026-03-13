@@ -12,6 +12,15 @@ import * as cartesia from "@livekit/agents-plugin-cartesia";
 import * as deepgram from "@livekit/agents-plugin-deepgram";
 import * as google from "@livekit/agents-plugin-google";
 
+import { AGENT_SYSTEM_PROMPT } from "./prompt";
+import {
+  STT_MODEL,
+  STT_LANGUAGE,
+  LLM_MODEL,
+  TTS_MODEL,
+  TTS_VOICE_ID,
+} from "./config";
+
 // Switch STT provider via STT_PROVIDER env var: "inference" | "deepgram" (default: "deepgram")
 function buildSTT() {
   switch (process.env.STT_PROVIDER) {
@@ -19,8 +28,8 @@ function buildSTT() {
       return new inference.STT({ model: "deepgram/nova-3", language: "en" });
     default:
       return new deepgram.STT({
-        model: "nova-3",
-        language: "en",
+        model: STT_MODEL,
+        language: STT_LANGUAGE,
         apiKey: process.env.DEEPGRAM_API_KEY,
       });
   }
@@ -38,13 +47,13 @@ export default defineAgent({
       const session = new voice.AgentSession({
         stt: buildSTT(),
         llm: new google.LLM({
-          model: "gemini-3-flash-preview",
+          model: LLM_MODEL,
           apiKey: process.env.GEMINI_API_KEY,
         }),
         tts: new cartesia.TTS({
           apiKey: process.env.CARTESIA_API_KEY,
-          model: "sonic-3",
-          voice: "7ea5e9c2-b719-4dc3-b870-5ba5f14d31d8",
+          model: TTS_MODEL,
+          voice: TTS_VOICE_ID,
         }),
       });
 
@@ -71,8 +80,7 @@ export default defineAgent({
       logger.info("starting session");
       await session.start({
         agent: new voice.Agent({
-          instructions:
-            "You are the Admissions Coordinator for the Online Master of Science in Psychology program based in Dubai. Your primary goal is to welcome prospective students and collect foundational information to help guide their academic journey. You must maintain a tone that is professional, academically grounded, and culturally respectful of the Middle Eastern educational context. Your first interaction must accomplish two things: identify the user's professional or academic background and determine their lead source. Use the following script structure: 1. Warm Greeting: Acknowledge the prestige of studying psychology in a global hub like Dubai. 2. Identification: Ask the user about their current role or previous degree. 3. Attribution: Ask how they discovered this specific online program (e.g., social media, search, or referral). Keep your responses concise, empathetic, and focused on the transition to graduate-level online study. Do not ask more than two questions at a time.",
+          instructions: AGENT_SYSTEM_PROMPT,
         }),
         room: ctx.room,
       });

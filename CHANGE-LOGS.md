@@ -1,3 +1,99 @@
+## 🗓️ **2026-03-13**
+
+---
+
+### 🐛 Fixes
+
+---
+
+> ### Fix Redundant API Polling
+>
+> - **What changed:** Replaced `setInterval` with unmount-aware recursive `setTimeout` logic using `isMounted` flags in both `AgentCard.tsx` and `AgentClient.tsx`.
+> - **Why:** When users navigated between pages or React Strict Mode triggered, overlapping timers were created without waiting for previous requests, causing rapid duplicate calls to `/api/rooms/active` for all agents simultaneously and preventing background fetches from cancelling on component unmount.
+> - **Files:**
+>   - `src/components/AgentCard.tsx`
+>   - `src/components/AgentClient.tsx`
+
+---
+
+> ### Fix Breadcrumb 404 Links
+>
+> - **What changed:** Disabled clickable Next.js `<Link>` elements in `Breadcrumbs.tsx` for `agents`, `outbound`, and `inbound` path segments.
+> - **Why:** Prevent users from clicking intermediate folder paths that do not have active Next.js routes, avoiding unnecessary 404 errors.
+> - **Files:**
+>   - `src/components/Breadcrumbs.tsx`
+
+---
+
+> ### Fix Agent Data Hydration and Layout Issues
+>
+> - **What changed:** Resolved a React hydration mismatch by converting the agent page layout and grid to server components that fetch the `process.env` backed agent details securely and passing them as props to the interactive client components. Cleaned up unused variables.
+> - **Why:** The mismatch occurred because `process.env` returns empty strings for custom variables on the client side during hydration, breaking UI consistency on initial load.
+> - **Files:**
+>   - `src/app/page.tsx`
+>   - `src/components/AgentCard.tsx`
+>   - `src/app/agents/[direction]/[agentKey]/page.tsx`
+>   - `src/components/AgentClient.tsx`
+>   - `src/app/calls/[roomName]/page.tsx`
+
+### ✨ Features
+
+---
+
+> ### Start Agent Process via UI
+>
+> - **What changed:** Added an API route to spawn background node processes running `npx tsx src/lib/agents/<direction>/<agentKey>/agent.ts start` and added Start/Stop Agent toggle buttons directly to `AgentClient.tsx` that also stream live process status.
+> - **Why:** Allow the user to start or stop specific agents locally right from the agent's web interface rather than running separate terminal windows for each agent process.
+> - **Files:**
+>   - `src/app/api/agents/process/route.ts`
+>   - `src/components/AgentClient.tsx`
+
+---
+
+> ### In-Browser Test Call Feature
+>
+> - **What changed:** Re-introduced testing agent capabilities directly via a browser microphone and speaker by adding a `TestCallModal` triggered via a "Test via Browser" button on each agent's detail page, and created a dedicated `POST /api/calls/test` route.
+> - **Why:** To enable testing agent configurations rapidly without relying on Twilio or incurring SIP outbound call charges.
+> - **Files:**
+>   - `src/components/TestCallModal.tsx`
+>   - `src/app/api/calls/test/route.ts`
+>   - `src/components/AgentClient.tsx`
+
+---
+
+> ### Multi-Agent Dashboard Redesign
+>
+> - **What changed:** Redesigned the root page into an agent card grid, created an agent detail page with action, active calls, and history panels, added a live transcript page, updated the root layout with a breadcrumb component, implemented a call history JSON store, and extended active rooms filtering by agent.
+> - **Why:** To support monitoring and managing multiple agents (inbound and outbound) individually from a unified control panel, tracking live calls and agent histories separately.
+> - **Files:**
+>   - `src/app/page.tsx`
+>   - `src/app/layout.tsx`
+>   - `src/app/agents/[direction]/[agentKey]/page.tsx`
+>   - `src/app/calls/[roomName]/page.tsx`
+>   - `src/components/Breadcrumbs.tsx`
+>   - `src/lib/history.ts`
+>   - `src/app/api/history/route.ts`
+>   - `src/app/api/rooms/active/route.ts`
+>   - `src/app/api/calls/outbound/route.ts`
+
+---
+
+### 🧹 Refactors
+
+---
+
+> ### Refactor Directory Structure for Multi-Agent Architecture
+>
+> - **What changed:** Moved existing single agent (`sales-en`) into `src/lib/agents/outbound/sales-en/`, created placeholders for `restaurant-es`, added agent configuration files (`prompt.ts`, `config.ts`, `tools.ts`), split SIP files into inbound/outbound setup routes, added environment variables for dispatch rule names and numbers per agent, and created a centralized agent registry.
+> - **Why:** To support adding multiple agents clearly, preventing hardcoded values in `worker.ts`, mapping specific numbers directly to specific agents, and isolating each agent's config to avoid monolithic agent logic as the codebase grows.
+> - **Files:**
+>   - ~12 files in `src/lib/agents/*`
+>   - `src/lib/sip/*`
+>   - `src/app/api/sip/outbound/setup/route.ts`
+>   - `src/app/api/sip/inbound/setup/route.ts`
+>   - `src/app/api/calls/inbound/route.ts`
+>   - `.env` & `.env.example`
+
 ## 🗓️ **2026-03-09**
 
 ---
