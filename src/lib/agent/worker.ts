@@ -9,8 +9,22 @@ import {
   inference,
 } from "@livekit/agents";
 import * as cartesia from "@livekit/agents-plugin-cartesia";
-
+import * as deepgram from "@livekit/agents-plugin-deepgram";
 import * as google from "@livekit/agents-plugin-google";
+
+// Switch STT provider via STT_PROVIDER env var: "inference" | "deepgram" (default: "deepgram")
+function buildSTT() {
+  switch (process.env.STT_PROVIDER) {
+    case "inference":
+      return new inference.STT({ model: "deepgram/nova-3", language: "en" });
+    default:
+      return new deepgram.STT({
+        model: "nova-3",
+        language: "en",
+        apiKey: process.env.DEEPGRAM_API_KEY,
+      });
+  }
+}
 
 export default defineAgent({
   entry: async (ctx: JobContext) => {
@@ -22,7 +36,7 @@ export default defineAgent({
       logger.info("connected to room");
 
       const session = new voice.AgentSession({
-        stt: new inference.STT({ model: "deepgram/nova-3", language: "en" }),
+        stt: buildSTT(),
         llm: new google.LLM({
           model: "gemini-3-flash-preview",
           apiKey: process.env.GEMINI_API_KEY,
@@ -58,13 +72,13 @@ export default defineAgent({
       await session.start({
         agent: new voice.Agent({
           instructions:
-            "You are a brief, friendly assistant that gives short responses.",
+            "You are the Admissions Coordinator for the Online Master of Science in Psychology program based in Dubai. Your primary goal is to welcome prospective students and collect foundational information to help guide their academic journey. You must maintain a tone that is professional, academically grounded, and culturally respectful of the Middle Eastern educational context. Your first interaction must accomplish two things: identify the user's professional or academic background and determine their lead source. Use the following script structure: 1. Warm Greeting: Acknowledge the prestige of studying psychology in a global hub like Dubai. 2. Identification: Ask the user about their current role or previous degree. 3. Attribution: Ask how they discovered this specific online program (e.g., social media, search, or referral). Keep your responses concise, empathetic, and focused on the transition to graduate-level online study. Do not ask more than two questions at a time.",
         }),
         room: ctx.room,
       });
 
       logger.info("session started, sending greeting");
-      session.say("Hey, how can I help you today?");
+      session.say("Hey, is this Maha?");
     } catch (err) {
       logger.error({ err }, "fatal error in entry");
     }
