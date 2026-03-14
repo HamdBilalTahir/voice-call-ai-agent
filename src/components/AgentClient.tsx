@@ -5,6 +5,7 @@ import { useEffect, useState } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
 import { AgentConfig } from "@/lib/agents/registry";
 import Link from "next/link";
+import { Switch } from "@/components/ui/switch";
 import { TestCallPanel } from "./TestCallPanel";
 
 interface AgentClientProps {
@@ -20,13 +21,15 @@ const TABS = [
   { id: "connect", label: "Connect" },
 ] as const;
 
-function TabContent({ tab }: { tab: string }) {
+import { AIJobDescriptionTab } from "./AIJobDescriptionTab";
+
+function TabContent({ tab, agentKey }: { tab: string; agentKey: string }) {
   return (
-    <div className="bg-neutral-800 border border-neutral-700 rounded-xl p-8 text-center">
+    <div className="bg-neutral-800 border border-neutral-700 rounded-xl p-10 text-center">
       {tab === "job-description" ? (
-        <p className="text-neutral-400">Prompt sections coming in next task.</p>
+        <AIJobDescriptionTab agentKey={agentKey} />
       ) : (
-        <p className="text-neutral-500">Coming soon.</p>
+        <p className="text-neutral-500 text-base">Coming soon.</p>
       )}
     </div>
   );
@@ -114,15 +117,15 @@ export function AgentClient({ agent, agentKey }: AgentClientProps) {
   };
 
   return (
-    <div className="flex flex-col gap-6">
+    <div className="flex flex-col gap-8">
       {/* Back button */}
       <div>
         <Link
           href="/"
-          className="inline-flex items-center gap-1.5 text-sm text-neutral-400 hover:text-white transition-colors"
+          className="inline-flex items-center gap-2 text-base text-neutral-400 hover:text-white transition-colors"
         >
           <svg
-            className="w-4 h-4"
+            className="w-5 h-5"
             fill="none"
             viewBox="0 0 24 24"
             stroke="currentColor"
@@ -139,30 +142,30 @@ export function AgentClient({ agent, agentKey }: AgentClientProps) {
       </div>
 
       {/* Two-column layout */}
-      <div className="grid grid-cols-[1fr_360px] gap-6 items-start">
+      <div className="grid grid-cols-[1fr_420px] gap-8 items-start">
         {/* Left column */}
-        <div className="min-w-0 space-y-6">
+        <div className="min-w-0 space-y-8">
           {/* Page header */}
-          <div className="flex items-start justify-between gap-4">
+          <div className="flex items-center justify-between gap-4">
             <div>
-              <h1 className="text-3xl font-bold text-white">{agent.name}</h1>
-              <div className="flex items-center gap-3 mt-2 flex-wrap">
-                <span className="text-sm text-neutral-500">
+              <h1 className="text-4xl font-bold text-white">{agent.name}</h1>
+              <div className="flex items-center gap-3 mt-3 flex-wrap">
+                <span className="text-base text-neutral-500">
                   ID:{" "}
                   <span className="text-neutral-400 font-mono">{agentKey}</span>
                 </span>
-                <span className="capitalize px-2 py-0.5 bg-neutral-800 rounded-md text-neutral-300 text-xs font-medium border border-neutral-700">
+                <span className="capitalize px-3 py-1 bg-neutral-800 rounded-md text-neutral-300 text-sm font-medium border border-neutral-700">
                   {agent.direction}
                 </span>
                 <div
-                  className={`flex items-center gap-1.5 px-2 py-0.5 rounded-full text-xs font-medium ${
+                  className={`flex items-center gap-2 px-3 py-1 rounded-full text-sm font-medium ${
                     isAgentRunning
                       ? "bg-green-900/30 text-green-400 border border-green-800/50"
                       : "bg-neutral-800 text-neutral-400 border border-neutral-700"
                   }`}
                 >
                   <div
-                    className={`w-1.5 h-1.5 rounded-full ${
+                    className={`w-2 h-2 rounded-full ${
                       isAgentRunning
                         ? "bg-green-500 animate-pulse"
                         : "bg-neutral-500"
@@ -172,33 +175,21 @@ export function AgentClient({ agent, agentKey }: AgentClientProps) {
                 </div>
               </div>
             </div>
-            <button
-              onClick={toggleAgent}
-              disabled={isStartingAgent}
-              className="shrink-0 flex items-center gap-2.5 disabled:opacity-50 group"
-              title={isAgentRunning ? "Deactivate agent" : "Activate agent"}
-            >
-              <span className="text-xs font-medium text-neutral-400 group-hover:text-neutral-200 transition-colors">
+            <div className="flex items-center gap-3 shrink-0">
+              <span className="text-sm font-medium text-neutral-400">
                 {isStartingAgent
                   ? "Working..."
                   : isAgentRunning
                     ? "Active"
                     : "Inactive"}
               </span>
-              {/* Track */}
-              <div
-                className={`relative w-11 h-6 rounded-full transition-colors duration-200 ${
-                  isAgentRunning ? "bg-green-500" : "bg-neutral-600"
-                }`}
-              >
-                {/* Thumb */}
-                <div
-                  className={`absolute top-0.5 w-5 h-5 bg-white rounded-full shadow transition-transform duration-200 ${
-                    isAgentRunning ? "translate-x-5" : "translate-x-0.5"
-                  }`}
-                />
-              </div>
-            </button>
+              <Switch
+                checked={isAgentRunning}
+                onCheckedChange={toggleAgent}
+                disabled={isStartingAgent}
+                className="data-checked:bg-green-500 data-unchecked:bg-neutral-600"
+              />
+            </div>
           </div>
 
           {/* Tab navigation */}
@@ -208,7 +199,7 @@ export function AgentClient({ agent, agentKey }: AgentClientProps) {
                 <button
                   key={tab.id}
                   onClick={() => setTab(tab.id)}
-                  className={`px-4 py-2.5 text-sm font-medium border-b-2 transition-colors whitespace-nowrap ${
+                  className={`px-5 py-3 text-base font-medium border-b-2 transition-colors whitespace-nowrap ${
                     activeTab === tab.id
                       ? "border-blue-500 text-blue-400"
                       : "border-transparent text-neutral-400 hover:text-neutral-200 hover:border-neutral-600"
@@ -221,20 +212,20 @@ export function AgentClient({ agent, agentKey }: AgentClientProps) {
           </div>
 
           {/* Tab content */}
-          <TabContent tab={activeTab} />
+          <TabContent tab={activeTab} agentKey={agentKey} />
 
           {/* Active Calls */}
-          <div className="bg-neutral-800 rounded-xl p-6 border border-neutral-700">
-            <h2 className="text-xl font-bold text-white mb-4 flex items-center justify-between">
+          <div className="bg-neutral-800 rounded-xl p-7 border border-neutral-700">
+            <h2 className="text-2xl font-bold text-white mb-5 flex items-center justify-between">
               Active Calls
               {activeCalls.length > 0 && (
-                <span className="text-sm font-normal px-2 py-1 bg-blue-600/20 text-blue-400 rounded-md">
+                <span className="text-sm font-normal px-3 py-1 bg-blue-600/20 text-blue-400 rounded-md">
                   {activeCalls.length} live
                 </span>
               )}
             </h2>
             {activeCalls.length === 0 ? (
-              <div className="text-center py-8 text-neutral-500">
+              <div className="text-center py-10 text-neutral-500 text-base">
                 No active calls
               </div>
             ) : (
@@ -248,10 +239,10 @@ export function AgentClient({ agent, agentKey }: AgentClientProps) {
                   return (
                     <div
                       key={room.name}
-                      className="flex items-center justify-between p-4 bg-neutral-900 rounded-lg border border-neutral-700"
+                      className="flex items-center justify-between p-5 bg-neutral-900 rounded-lg border border-neutral-700"
                     >
-                      <div className="flex flex-col">
-                        <span className="font-medium text-white">
+                      <div className="flex flex-col gap-1">
+                        <span className="font-medium text-white text-base">
                           {room.name}
                         </span>
                         <span className="text-sm text-neutral-400">
@@ -260,7 +251,7 @@ export function AgentClient({ agent, agentKey }: AgentClientProps) {
                         </span>
                       </div>
                       <Link href={`/calls/${room.name}`}>
-                        <button className="px-4 py-2 bg-neutral-700 hover:bg-neutral-600 rounded-lg text-sm font-medium transition-colors">
+                        <button className="px-5 py-2.5 bg-neutral-700 hover:bg-neutral-600 rounded-lg text-base font-medium transition-colors">
                           View Transcript
                         </button>
                       </Link>
@@ -272,41 +263,41 @@ export function AgentClient({ agent, agentKey }: AgentClientProps) {
           </div>
 
           {/* Call History */}
-          <div className="bg-neutral-800 rounded-xl p-6 border border-neutral-700">
-            <h2 className="text-xl font-bold text-white mb-4">Call History</h2>
+          <div className="bg-neutral-800 rounded-xl p-7 border border-neutral-700">
+            <h2 className="text-2xl font-bold text-white mb-5">Call History</h2>
             {callHistory.length === 0 ? (
-              <div className="text-center py-8 text-neutral-500">
+              <div className="text-center py-10 text-neutral-500 text-base">
                 No call history yet
               </div>
             ) : (
               <div className="overflow-x-auto">
                 <table className="w-full text-left border-collapse">
                   <thead>
-                    <tr className="border-b border-neutral-700 text-sm text-neutral-400">
-                      <th className="py-3 font-medium">Phone Number</th>
-                      <th className="py-3 font-medium">Start Time</th>
-                      <th className="py-3 font-medium">Duration</th>
-                      <th className="py-3 font-medium">Status</th>
+                    <tr className="border-b border-neutral-700 text-base text-neutral-400">
+                      <th className="py-4 font-medium">Phone Number</th>
+                      <th className="py-4 font-medium">Start Time</th>
+                      <th className="py-4 font-medium">Duration</th>
+                      <th className="py-4 font-medium">Status</th>
                     </tr>
                   </thead>
-                  <tbody className="text-sm">
+                  <tbody className="text-base">
                     {callHistory.map((record) => (
                       <tr
                         key={record.id}
                         className="border-b border-neutral-700/50 last:border-0"
                       >
-                        <td className="py-3 text-white font-medium">
+                        <td className="py-4 text-white font-medium">
                           {record.phoneNumber}
                         </td>
-                        <td className="py-3 text-neutral-400">
+                        <td className="py-4 text-neutral-400">
                           {new Date(record.startTime).toLocaleString()}
                         </td>
-                        <td className="py-3 text-neutral-400">
+                        <td className="py-4 text-neutral-400">
                           {record.duration ? `${record.duration}s` : "-"}
                         </td>
-                        <td className="py-3">
+                        <td className="py-4">
                           <span
-                            className={`px-2 py-1 rounded-md text-xs font-medium ${
+                            className={`px-3 py-1 rounded-md text-sm font-medium ${
                               record.status === "completed"
                                 ? "bg-green-900/30 text-green-400"
                                 : record.status === "missed"
@@ -327,7 +318,7 @@ export function AgentClient({ agent, agentKey }: AgentClientProps) {
         </div>
 
         {/* Right sidebar — sticky */}
-        <div className="sticky top-24">
+        <div className="sticky top-24 mt-[148px]">
           <TestCallPanel agent={agent} agentKey={agentKey} />
         </div>
       </div>

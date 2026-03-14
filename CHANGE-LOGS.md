@@ -6,6 +6,88 @@
 
 ---
 
+> ### AI Job Description Tab UI (4 Editable Prompt Sections)
+>
+> - **What changed:** Built a new UI for the "AI Job Description" tab on the agent detail page. Created `GET /api/agents/[agentKey]/prompt` to read the agent's `prompt.ts` file from disk and split it into four sections based on markers: `[ROLE AND RESPONSIBILITIES]`, `[PERSONA LANGUAGE AND TONE]`, `[MISTAKES TO AVOID]`, and `[ADDITIONAL INSTRUCTIONS]`. Created `POST /api/agents/[agentKey]/prompt` to reassemble the strings and save it back to disk. Rendered these 4 sections in expanding textareas that autogrow. Added a Save Changes button and loading skeletons. Added section markers to the existing prompts for `sales-en` and `restaurant-es`.
+> - **Why:** To allow users to directly modify an agent's system prompt in structured logical sections via the dashboard without needing to edit the raw TypeScript files. Changes take effect on the next agent restart.
+> - **Files:**
+>   - `src/lib/agents/inbound/restaurant-es/prompt.ts`
+>   - `src/lib/agents/outbound/sales-en/prompt.ts`
+>   - `src/app/api/agents/[agentKey]/prompt/route.ts` _(new)_
+>   - `src/components/AIJobDescriptionTab.tsx` _(new)_
+>   - `src/components/AgentClient.tsx`
+
+---
+
+## 🗓️ **2026-03-15**
+
+---
+
+### ✨ Features
+
+---
+
+> ### Agent Detail Page — Two-Column Layout with Persistent Test Call Sidebar (UI-1)
+>
+> - **What changed:** Rebuilt the agent detail page from a single-column layout with a modal into a permanent two-column grid. Left column (65%) contains the page header, five URL-state tabs (`?tab=`), tab content placeholders, Active Calls, and Call History. Right column (35%, 420px) holds a sticky `TestCallPanel` that is always visible. The old `TestCallModal` component was deleted. Inbound agents show the browser mic connect flow in the sidebar; outbound agents show the phone dial UI. Tab selection is preserved on refresh via `?tab=` search param using `useSearchParams` + `useRouter`. `Suspense` boundary added in `page.tsx` to satisfy Next.js requirements for `useSearchParams` in client components.
+> - **Why:** Mirrors how professional voice AI platforms are structured — configuration on the left, live testing on the right — so you can edit a prompt and immediately test it without navigating away or opening a modal.
+> - **Files:**
+>   - `src/components/AgentClient.tsx` _(rewritten)_
+>   - `src/components/TestCallPanel.tsx` _(new)_
+>   - `src/components/TestCallModal.tsx` _(deleted)_
+>   - `src/app/agents/[direction]/[agentKey]/page.tsx`
+
+---
+
+> ### Agent Activate/Deactivate Toggle Switch
+>
+> - **What changed:** Replaced the "Start Agent" / "Stop Agent" text buttons with a shadcn `Switch` component (green when active, grey when inactive) labelled "Active" / "Inactive". Initialized shadcn/ui with `@base-ui/react` and added the Switch component.
+> - **Why:** A toggle switch communicates binary on/off state more clearly than text buttons and matches the production-monitoring intent of the control.
+> - **Files:**
+>   - `src/components/AgentClient.tsx`
+>   - `src/components/ui/switch.tsx` _(new)_
+
+---
+
+### 🐛 Fixes
+
+---
+
+> ### Fix `jose` Module Not Found Build Error
+>
+> - **What changed:** Added `"livekit-server-sdk"` to `serverExternalPackages` in `next.config.ts`.
+> - **Why:** `livekit-server-sdk` imports `jose` (a Node.js crypto library) which cannot be bundled for the browser. Marking it as a server external package prevents Next.js/Turbopack from attempting to include it in client bundles.
+> - **Files:**
+>   - `next.config.ts`
+
+---
+
+> ### Fix Agent Not Starting on Playground Test Call
+>
+> - **What changed:** Added an agent process start (`POST /api/agents/process` with `action: "start"`) at the beginning of `connectToAgent` in `InboundTestPanel` and `handleCall` in `OutboundCallPanel`, before the LiveKit token or outbound call requests. Added agent process stop on LiveKit `onDisconnected` in the inbound panel.
+> - **Why:** The agent process was not running when users clicked "Connect Microphone", so no agent joined the test room. The process is now auto-started on call initiation and auto-stopped when the call ends, keeping playground calls self-contained and independent of the production toggle.
+> - **Files:**
+>   - `src/components/TestCallPanel.tsx`
+
+---
+
+> ### Fix EPIPE Crash on Agent Stop
+>
+> - **What changed:** Changed `child.kill()` to `child.kill("SIGINT")` in the agent process stop handler.
+> - **Why:** `SIGTERM` (the default) abruptly terminates the main agent process while LiveKit's worker IPC is still active, causing worker subprocesses to crash with `Error: write EPIPE` when they try to send a message to the now-dead parent. `SIGINT` gives the LiveKit agent framework time to shut down worker processes cleanly before the main process exits.
+> - **Files:**
+>   - `src/app/api/agents/process/route.ts`
+
+---
+
+## 🗓️ **2026-03-14**
+
+---
+
+### ✨ Features
+
+---
+
 > ### Live Transcript with Real-Time Streaming Translation
 >
 > - **What changed:** Added a `TranscriptView` component to the browser test call modal showing a live chat-style transcript of both the agent and caller. Translation to English streams word-by-word for the `restaurant-es` agent using a new `POST /api/translate` endpoint (Gemini streaming). Caller and agent bubbles are deduplicated by `lk.segment_id`. An English skip prevents translation rows from appearing when the detected output is already English.
