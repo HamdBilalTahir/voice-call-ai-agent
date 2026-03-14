@@ -95,7 +95,13 @@ export default defineAgent({
 
 if (require.main === module) {
   process.loadEnvFile();
+  // Assign a random port so multiple agents can run simultaneously
+  const port = process.env.PORT ? parseInt(process.env.PORT) : 0;
   cli.runApp(
-    new ServerOptions({ agent: __filename, agentName: "voice-agent" }),
+    new ServerOptions({
+      agent: __filename,
+      agentName: process.env.AGENT_DISPATCH_RULE_SALES_EN || "voice-agent",
+      port,
+    }),
   );
 }

@@ -46,13 +46,26 @@ export async function POST(request: Request) {
         "agent.ts",
       );
 
+      // Clean up npm_config_ environment variables to prevent npm warn messages
+      const cleanEnv: Record<string, string> = {};
+      for (const key in process.env) {
+        if (
+          !key.startsWith("npm_config_") &&
+          !key.startsWith("npm_package_") &&
+          process.env[key] !== undefined
+        ) {
+          cleanEnv[key] = process.env[key] as string;
+        }
+      }
+      if (process.env.PATH) cleanEnv.PATH = process.env.PATH;
+
       // Spawn the process
       const child = spawn("npx", ["tsx", scriptPath, "start"], {
         cwd: process.cwd(),
-        env: { ...process.env, PATH: process.env.PATH },
-        stdio: "ignore", // We can ignore output for now, or log it if needed
+        env: cleanEnv as NodeJS.ProcessEnv,
+        stdio: "inherit", // Allows viewing agent logs directly in the Next.js console
         detached: false,
-      });
+      }) as ChildProcess;
 
       child.on("error", (err) => {
         console.error(`Failed to start agent ${agentKey}:`, err);

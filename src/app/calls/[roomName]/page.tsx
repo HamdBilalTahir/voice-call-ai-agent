@@ -1,9 +1,12 @@
+/* eslint-disable react-hooks/exhaustive-deps */
+/* eslint-disable @typescript-eslint/no-explicit-any */
 "use client";
 
 import { useEffect, useState, useRef, use } from "react";
 import { useRouter } from "next/navigation";
 import { Room, RoomEvent } from "livekit-client";
 import { agents } from "@/lib/agents/registry";
+import { translateToEnglish } from "@/lib/translation";
 
 interface PageProps {
   params: Promise<{
@@ -16,6 +19,8 @@ interface TranscriptLine {
   speaker: "Agent" | "Caller";
   text: string;
   timestamp: number;
+  translation?: string;
+  isFinal?: boolean;
 }
 
 export default function TranscriptPage({ params }: PageProps) {
@@ -56,30 +61,83 @@ export default function TranscriptPage({ params }: PageProps) {
         const room = new Room();
         roomRef.current = room;
 
-        room.on(RoomEvent.DataReceived, (payload, participant, kind, topic) => {
-          if (topic === "transcript") {
-            try {
-              const data = JSON.parse(new TextDecoder().decode(payload));
-              const text = data.text;
-              const isAgent =
-                data.isAgent ||
-                participant?.identity.includes("agent") ||
-                data.participantIdentity?.includes("agent");
+        // Per LiveKit docs: each segment produces two streams (interim + final) sharing lk.segment_id.
+        // We merge them by segment_id so only one bubble appears per utterance.
+        // for-await yields delta CHUNKS — accumulate manually into full text.
+        const translatedSegmentIds = new Set<string>();
+        room.registerTextStreamHandler(
+          "lk.transcription",
+          async (reader, participantInfo) => {
+            const segmentId =
+              (reader.info as any).attributes?.["lk.segment_id"] ||
+              reader.info.id;
+            const isInterimStream =
+              (reader.info as any).attributes?.["lk.transcription_final"] ===
+              "false";
+            const isAgent = !participantInfo.identity.startsWith("phone-");
 
-              setTranscripts((prev) => [
+            setTranscripts((prev) => {
+              if (prev.some((l) => l.id === segmentId)) return prev;
+              return [
                 ...prev,
                 {
-                  id: Math.random().toString(36).substring(7),
+                  id: segmentId,
                   speaker: isAgent ? "Agent" : "Caller",
-                  text,
+                  text: "",
                   timestamp: Date.now(),
+                  isFinal: false,
                 },
-              ]);
-            } catch (e) {
-              console.error("Error parsing transcript:", e);
+              ];
+            });
+
+            // Accumulate delta chunks into full text
+            let accumulated = "";
+            for await (const chunk of reader) {
+              accumulated += chunk;
+              if (!mounted) return;
+              setTranscripts((prev) =>
+                prev.map((l) =>
+                  l.id === segmentId ? { ...l, text: accumulated } : l,
+                ),
+              );
             }
-          }
-        });
+
+            if (!mounted) return;
+
+            setTranscripts((prev) =>
+              prev.map((l) =>
+                l.id === segmentId ? { ...l, isFinal: true } : l,
+              ),
+            );
+
+            // Skip translation only for interim CALLER streams (partial STT text).
+            // Agent speech may arrive with lk.transcription_final="false" but is always complete — translate it.
+            const skipAsInterim = isInterimStream && !isAgent;
+            if (
+              agentKey === "restaurant-es" &&
+              accumulated.length > 2 &&
+              !skipAsInterim &&
+              !translatedSegmentIds.has(segmentId)
+            ) {
+              translatedSegmentIds.add(segmentId);
+              const translation = await translateToEnglish(
+                accumulated,
+                (partial) => {
+                  setTranscripts((prev) =>
+                    prev.map((l) =>
+                      l.id === segmentId ? { ...l, translation: partial } : l,
+                    ),
+                  );
+                },
+              );
+              setTranscripts((prev) =>
+                prev.map((l) =>
+                  l.id === segmentId ? { ...l, translation } : l,
+                ),
+              );
+            }
+          },
+        );
 
         room.on(RoomEvent.Disconnected, () => {
           if (mounted) setIsEnded(true);
@@ -204,7 +262,15 @@ export default function TranscriptPage({ params }: PageProps) {
                       : "bg-neutral-700 border border-neutral-600 text-neutral-50"
                   }`}
                 >
-                  {line.text}
+                  <div>{line.text}</div>
+                  {agentKey === "restaurant-es" &&
+                    line.isFinal &&
+                    line.text.length > 2 &&
+                    line.translation !== "" && (
+                      <div className="mt-1 text-sm italic text-neutral-400">
+                        {line.translation ?? "Translating..."}
+                      </div>
+                    )}
                 </div>
               </div>
             ))

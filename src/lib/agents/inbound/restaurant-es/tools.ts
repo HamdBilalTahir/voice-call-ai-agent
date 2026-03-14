@@ -1,2 +1,1 @@
-// Placeholder tools
-export const tools = {};
+export const tools = [];

@@ -1,12 +1,242 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
 "use client";
 
-import { useState } from "react";
 import {
   LiveKitRoom,
   RoomAudioRenderer,
   VoiceAssistantControlBar,
+  useRoomContext,
+  useLocalParticipant,
 } from "@livekit/components-react";
 import "@livekit/components-styles";
+import { useEffect, useState, useRef } from "react";
+import { translateToEnglish } from "@/lib/translation";
+
+interface TranscriptLine {
+  segmentId: string;
+  speaker: "Agent" | "Caller";
+  text: string;
+  translation?: string;
+  isFinal: boolean;
+}
+
+function TranscriptView({ agentKey }: { agentKey: string }) {
+  const room = useRoomContext();
+  const { localParticipant } = useLocalParticipant();
+  const [transcripts, setTranscripts] = useState<TranscriptLine[]>([]);
+  const [copied, setCopied] = useState(false);
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const localIdentityRef = useRef<string | undefined>(undefined);
+  // Tracks which segmentIds have already triggered translation (interim + final both complete)
+  const translatedSegmentsRef = useRef<Set<string>>(new Set());
+  const copyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    localIdentityRef.current = localParticipant?.identity;
+  }, [localParticipant?.identity]);
+
+  useEffect(() => {
+    if (!room) return;
+    let mounted = true;
+
+    // Per LiveKit docs: each segment produces two streams (interim + final) sharing lk.segment_id.
+    // We merge them by segment_id so only one bubble appears per utterance.
+    // for-await yields delta CHUNKS — we must accumulate them manually.
+    const handler = async (reader: any, participantInfo: any) => {
+      const segmentId =
+        reader.info.attributes?.["lk.segment_id"] || reader.info.id;
+      // lk.transcription_final = "false" → interim STT stream (partial text, skip translation)
+      // lk.transcription_final = "true"  → final STT stream (complete text, translate)
+      // not set                           → agent speech stream (always translate)
+      const isInterimStream =
+        reader.info.attributes?.["lk.transcription_final"] === "false";
+      const isAgent =
+        participantInfo.identity !== localIdentityRef.current &&
+        !participantInfo.identity.startsWith("phone-");
+      const speaker: "Agent" | "Caller" = isAgent ? "Agent" : "Caller";
+
+      // Add entry only if it doesn't exist yet (interim stream arrives first)
+      setTranscripts((prev) => {
+        if (prev.some((t) => t.segmentId === segmentId)) return prev;
+        return [...prev, { segmentId, speaker, text: "", isFinal: false }];
+      });
+
+      // Accumulate delta chunks into full text
+      let accumulated = "";
+      for await (const chunk of reader) {
+        accumulated += chunk;
+        if (!mounted) return;
+        setTranscripts((prev) =>
+          prev.map((t) =>
+            t.segmentId === segmentId ? { ...t, text: accumulated } : t,
+          ),
+        );
+      }
+
+      if (!mounted) return;
+
+      setTranscripts((prev) =>
+        prev.map((t) =>
+          t.segmentId === segmentId ? { ...t, isFinal: true } : t,
+        ),
+      );
+
+      // Skip translation only for interim CALLER streams (partial STT text).
+      // Agent speech may arrive with lk.transcription_final="false" but is always complete — translate it.
+      const skipAsInterim = isInterimStream && !isAgent;
+      if (
+        agentKey === "restaurant-es" &&
+        accumulated.length > 2 &&
+        !skipAsInterim &&
+        !translatedSegmentsRef.current.has(segmentId)
+      ) {
+        translatedSegmentsRef.current.add(segmentId);
+        const translation = await translateToEnglish(accumulated, (partial) => {
+          setTranscripts((prev) =>
+            prev.map((t) =>
+              t.segmentId === segmentId ? { ...t, translation: partial } : t,
+            ),
+          );
+        });
+        // Final call: clears row if English (""), or sets the complete translated text
+        setTranscripts((prev) =>
+          prev.map((t) =>
+            t.segmentId === segmentId ? { ...t, translation } : t,
+          ),
+        );
+      }
+    };
+
+    room.registerTextStreamHandler("lk.transcription", handler);
+
+    return () => {
+      mounted = false;
+      room.unregisterTextStreamHandler("lk.transcription");
+    };
+  }, [room, agentKey]);
+
+  useEffect(() => {
+    if (scrollRef.current) {
+      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+    }
+  }, [transcripts]);
+
+  useEffect(() => {
+    return () => {
+      if (copyTimerRef.current) clearTimeout(copyTimerRef.current);
+    };
+  }, []);
+
+  const copyTranscript = () => {
+    const text = transcripts
+      .filter((t) => t.isFinal && t.text.trim())
+      .map((t) => `${t.speaker}: ${t.text}`)
+      .join("\n");
+    navigator.clipboard.writeText(text).then(() => {
+      setCopied(true);
+      if (copyTimerRef.current) clearTimeout(copyTimerRef.current);
+      copyTimerRef.current = setTimeout(() => setCopied(false), 2000);
+    });
+  };
+
+  return (
+    <div className="w-full h-[480px] bg-neutral-900 border border-neutral-700 rounded-xl overflow-hidden flex flex-col mt-4">
+      <div className="bg-neutral-800 px-4 py-2 border-b border-neutral-700 text-sm font-medium text-white flex items-center justify-between">
+        <span>Live Transcript</span>
+        {transcripts.length > 0 && (
+          <button
+            onClick={copyTranscript}
+            className="text-xs text-neutral-400 hover:text-white transition-colors flex items-center gap-1"
+          >
+            {copied ? (
+              <>
+                <svg
+                  className="w-3.5 h-3.5 text-green-400"
+                  fill="none"
+                  viewBox="0 0 24 24"
+                  stroke="currentColor"
+                >
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    strokeWidth={2}
+                    d="M5 13l4 4L19 7"
+                  />
+                </svg>
+                <span className="text-green-400">Copied</span>
+              </>
+            ) : (
+              <>
+                <svg
+                  className="w-3.5 h-3.5"
+                  fill="none"
+                  viewBox="0 0 24 24"
+                  stroke="currentColor"
+                >
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    strokeWidth={2}
+                    d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"
+                  />
+                </svg>
+                Copy
+              </>
+            )}
+          </button>
+        )}
+      </div>
+      <div ref={scrollRef} className="flex-1 overflow-y-auto p-4 space-y-4">
+        {transcripts.length === 0 ? (
+          <div className="text-neutral-500 text-center text-sm py-8">
+            Waiting for someone to speak...
+          </div>
+        ) : (
+          transcripts.map((t) => {
+            const isAgent = t.speaker === "Agent";
+            return (
+              <div
+                key={t.segmentId}
+                className={`flex flex-col max-w-[90%] ${
+                  isAgent
+                    ? "items-start self-start"
+                    : "items-end self-end ml-auto"
+                }`}
+              >
+                <div className="flex items-center gap-2 mb-1">
+                  <span
+                    className={`text-[10px] font-medium ${
+                      isAgent ? "text-blue-400" : "text-green-400"
+                    }`}
+                  >
+                    {isAgent ? "Agent" : "Caller"}
+                  </span>
+                </div>
+                <div
+                  className={`px-3 py-2 rounded-xl text-sm ${
+                    isAgent
+                      ? "bg-blue-600/20 border border-blue-500/30 text-blue-50"
+                      : "bg-neutral-700 border border-neutral-600 text-neutral-50"
+                  }`}
+                >
+                  <div>{t.text}</div>
+                  {agentKey === "restaurant-es" &&
+                    t.isFinal &&
+                    t.text.length > 2 &&
+                    t.translation !== "" && (
+                      <div className="mt-1 text-xs italic text-neutral-400">
+                        {t.translation ?? "Translating..."}
+                      </div>
+                    )}
+                </div>
+              </div>
+            );
+          })
+        )}
+      </div>
+    </div>
+  );
+}
 
 interface TestCallModalProps {
   agentKey: string;
@@ -60,7 +290,10 @@ export function TestCallModal({ agentKey, onClose }: TestCallModalProps) {
 
   return (
     <div className="fixed inset-0 bg-black/80 z-50 flex items-center justify-center p-4">
-      <div className="bg-neutral-900 border border-neutral-700 rounded-2xl p-6 max-w-md w-full relative">
+      <div
+        className="bg-neutral-900 border border-neutral-700 rounded-2xl p-6 relative max-h-[90vh] overflow-y-auto"
+        style={{ width: "min(900px, calc(100vw - 2rem))" }}
+      >
         <button
           onClick={onClose}
           className="absolute top-4 right-4 text-neutral-400 hover:text-white"
@@ -140,6 +373,7 @@ export function TestCallModal({ agentKey, onClose }: TestCallModalProps) {
               <div className="w-full">
                 <VoiceAssistantControlBar controls={{ leave: true }} />
                 <RoomAudioRenderer />
+                <TranscriptView agentKey={agentKey} />
               </div>
             </div>
           </LiveKitRoom>
