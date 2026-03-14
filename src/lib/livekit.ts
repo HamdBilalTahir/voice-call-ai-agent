@@ -28,6 +28,7 @@ export async function generateLiveKitToken(
     room: roomName,
     canPublish: true,
     canSubscribe: true,
+    canPublishData: true,
   });
 
   return await at.toJwt();
