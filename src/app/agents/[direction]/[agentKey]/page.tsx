@@ -1,6 +1,7 @@
 import { agents } from "@/lib/agents/registry";
 import { AgentClient } from "@/components/AgentClient";
 import Link from "next/link";
+import { Suspense } from "react";
 
 interface PageProps {
   params: Promise<{
@@ -30,5 +31,9 @@ export default async function AgentPage({ params }: PageProps) {
     );
   }
 
-  return <AgentClient agent={agent} agentKey={agentKey} />;
+  return (
+    <Suspense>
+      <AgentClient agent={agent} agentKey={agentKey} />
+    </Suspense>
+  );
 }
