@@ -82,7 +82,7 @@ export async function POST(request: Request) {
     } else if (action === "stop") {
       const child = agentProcesses[agentKey];
       if (child && !child.killed) {
-        child.kill();
+        child.kill("SIGINT");
         delete agentProcesses[agentKey];
       }
       return NextResponse.json({ message: "Agent stopped", isRunning: false });
