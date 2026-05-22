@@ -29,6 +29,15 @@
 
 ---
 
+> ### Compiled-Prompt Preview — Fix "Failed to Load" Error
+>
+> - **What changed:** The "Preview what your agent sees" modal was always displaying "Failed to load compiled prompt." instead of the assembled prompt text. Root cause: `GET /api/agents/[agentKey]/compiled-prompt` had no error handling — any exception during `getAgent()` or `buildSystemPrompt()` caused an unhandled 500 that the modal's `!res.ok` guard caught and converted to the error message. Additionally, the response was built with `new NextResponse(string, headers)` which is unreliable for `text/plain` bodies in the Next.js App Router. Fix: wrapped the entire handler in try-catch with a `console.error` fallback, and switched the success response to `new Response(string, { status: 200, headers })` (standard Web API constructor) for predictable text/plain handling.
+> - **Why:** The preview modal is the primary way users verify what their agent actually hears before going live; a perpetual error state made it completely unusable.
+> - **Files:**
+>   - `src/app/api/agents/[agentKey]/compiled-prompt/route.ts`
+
+---
+
 > ### Instructions Tab — Pull Existing Prompt Data from Firestore Legacy Field
 >
 > - **What changed:** `getAgent()` now applies a two-tier fallback when the four individual section fields (`roleAndResponsibilities`, `personaLanguageAndTone`, `mistakesToAvoid`, `additionalInstructions`) are all empty in Firestore. **Tier 1 — `voiceInstructions` parse:** if the agent document has a `voiceInstructions` value containing `[ROLE AND RESPONSIBILITIES]` headers (the old monolithic prompt format), the content is split on the fly into the four section fields using the same `extractSection` regex already used by the migration backfill. No Firestore write occurs — the parsed data is returned in memory so the UI renders the agent's real instructions immediately. When the user saves, the values are written to the proper individual fields; subsequent loads read them directly without the fallback. **Tier 2 — filesystem parse:** if `voiceInstructions` is also absent, `getAgent()` reads and parses the agent's static `prompt.ts` file from disk as a last resort. Both fallbacks were added to `src/lib/firebase/agents.ts` alongside the new `extractSection` and `readPromptFromFilesystem` helpers (previously duplicated across `prompt/route.ts` and `migration.ts`).

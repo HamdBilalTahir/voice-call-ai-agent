@@ -12,20 +12,29 @@ type Params = Promise<{ agentKey: string }>;
  * with bracketed headers. voiceGreeting is a separate utterance and is NOT included.
  */
 export async function GET(_req: NextRequest, { params }: { params: Params }) {
-  const { agentKey } = await params;
-  const agent = await getAgent(agentKey);
-  if (!agent) {
-    return NextResponse.json({ error: "Agent not found" }, { status: 404 });
+  try {
+    const { agentKey } = await params;
+    const agent = await getAgent(agentKey);
+    if (!agent) {
+      return NextResponse.json({ error: "Agent not found" }, { status: 404 });
+    }
+
+    const prompt = buildSystemPrompt({
+      roleAndResponsibilities: agent.roleAndResponsibilities,
+      personaLanguageAndTone: agent.personaLanguageAndTone,
+      mistakesToAvoid: agent.mistakesToAvoid,
+      additionalInstructions: agent.additionalInstructions,
+    });
+
+    return new Response(prompt, {
+      status: 200,
+      headers: { "Content-Type": "text/plain; charset=utf-8" },
+    });
+  } catch (err) {
+    console.error("[compiled-prompt] failed:", err);
+    return NextResponse.json(
+      { error: "Failed to compile prompt" },
+      { status: 500 },
+    );
   }
-
-  const prompt = buildSystemPrompt({
-    roleAndResponsibilities: agent.roleAndResponsibilities,
-    personaLanguageAndTone: agent.personaLanguageAndTone,
-    mistakesToAvoid: agent.mistakesToAvoid,
-    additionalInstructions: agent.additionalInstructions,
-  });
-
-  return new NextResponse(prompt, {
-    headers: { "Content-Type": "text/plain; charset=utf-8" },
-  });
 }
