@@ -8,8 +8,16 @@ export interface CallRecord {
   agentKey: string;
   phoneNumber: string;
   startTime: number;
+  endTime?: number;
   duration?: number;
   status: "completed" | "missed" | "in-progress";
+  direction?: "inbound" | "outbound";
+  outcome?: "completed" | "dropped" | "transferred" | "failed";
+  sentiment?: "positive" | "neutral" | "negative";
+  sentimentScore?: number;
+  transcript?: string;
+  tags?: string[];
+  archived?: boolean;
 }
 
 export function getCallHistory(): CallRecord[] {

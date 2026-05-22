@@ -18,7 +18,12 @@ const getPromptPath = (agentKey: string, direction: string) => {
 function extractSection(content: string, sectionName: string): string {
   const regex = new RegExp(`\\[${sectionName}\\]([\\s\\S]*?)(?=\\[|$)`);
   const match = content.match(regex);
-  return match ? match[1].trim() : "";
+  if (!match) return "";
+  // Strip trailing TS template-literal artifacts (`;` and `` ` ``) from the last section
+  return match[1]
+    .trim()
+    .replace(/[`;\s]+$/, "")
+    .trim();
 }
 
 export async function GET(

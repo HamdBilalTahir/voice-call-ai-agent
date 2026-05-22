@@ -10,8 +10,11 @@ import {
 } from "@livekit/components-react";
 import "@livekit/components-styles";
 import { useEffect, useState, useRef } from "react";
+import { Mic, Copy, Check } from "lucide-react";
 import { translateToEnglish } from "@/lib/translation";
 import { AgentConfig } from "@/lib/agents/registry";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 
 interface TranscriptLine {
   segmentId: string;
@@ -129,93 +132,71 @@ function TranscriptView({ agentKey }: { agentKey: string }) {
   };
 
   return (
-    <div className="w-full h-[480px] bg-neutral-900 border border-neutral-700 rounded-xl overflow-hidden flex flex-col mt-4">
-      <div className="bg-neutral-800 px-5 py-3 border-b border-neutral-700 text-base font-medium text-white flex items-center justify-between">
-        <span>Live Transcript</span>
+    <div className="w-full h-[420px] border border-border rounded-xl overflow-hidden flex flex-col mt-4 bg-card">
+      <div className="bg-secondary/60 px-4 py-2.5 border-b border-border flex items-center justify-between">
+        <span className="text-xs font-semibold text-foreground uppercase tracking-wide">
+          Live transcript
+        </span>
         {transcripts.length > 0 && (
           <button
             onClick={copyTranscript}
-            className="text-xs text-neutral-400 hover:text-white transition-colors flex items-center gap-1"
+            className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors"
+            aria-label="Copy transcript"
           >
             {copied ? (
               <>
-                <svg
-                  className="w-3.5 h-3.5 text-green-400"
-                  fill="none"
-                  viewBox="0 0 24 24"
-                  stroke="currentColor"
-                >
-                  <path
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    strokeWidth={2}
-                    d="M5 13l4 4L19 7"
-                  />
-                </svg>
-                <span className="text-green-400">Copied</span>
+                <Check className="size-3 text-success" />
+                <span className="text-success">Copied</span>
               </>
             ) : (
               <>
-                <svg
-                  className="w-3.5 h-3.5"
-                  fill="none"
-                  viewBox="0 0 24 24"
-                  stroke="currentColor"
-                >
-                  <path
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    strokeWidth={2}
-                    d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"
-                  />
-                </svg>
+                <Copy className="size-3" />
                 Copy
               </>
             )}
           </button>
         )}
       </div>
-      <div ref={scrollRef} className="flex-1 overflow-y-auto p-5 space-y-4">
+
+      <div ref={scrollRef} className="flex-1 overflow-y-auto p-4 space-y-3">
         {transcripts.length === 0 ? (
-          <div className="text-neutral-500 text-center text-sm py-8">
-            Waiting for someone to speak...
-          </div>
+          <p className="text-xs text-muted-foreground text-center py-8">
+            Waiting for someone to speak…
+          </p>
         ) : (
           transcripts.map((t) => {
             const isAgent = t.speaker === "Agent";
             return (
               <div
                 key={t.segmentId}
-                className={`flex flex-col max-w-[90%] ${
+                className={`flex flex-col max-w-[88%] ${
                   isAgent
                     ? "items-start self-start"
                     : "items-end self-end ml-auto"
                 }`}
               >
-                <div className="flex items-center gap-2 mb-1">
-                  <span
-                    className={`text-[10px] font-medium ${
-                      isAgent ? "text-blue-400" : "text-green-400"
-                    }`}
-                  >
-                    {isAgent ? "Agent" : "Caller"}
-                  </span>
-                </div>
-                <div
-                  className={`px-3 py-2 rounded-xl text-sm ${
-                    isAgent
-                      ? "bg-blue-600/20 border border-blue-500/30 text-blue-50"
-                      : "bg-neutral-700 border border-neutral-600 text-neutral-50"
+                <span
+                  className={`text-[10px] font-semibold mb-1 uppercase tracking-wide ${
+                    isAgent ? "text-primary" : "text-success"
                   }`}
                 >
-                  <div>{t.text}</div>
+                  {isAgent ? "Agent" : "Caller"}
+                </span>
+                <div
+                  className={`px-3 py-2 rounded-xl text-xs leading-relaxed ${
+                    isAgent
+                      ? "bg-accent text-accent-foreground border border-primary/10"
+                      : "bg-secondary text-secondary-foreground border border-border"
+                  }`}
+                >
+                  <span>{t.text}</span>
                   {agentKey === "restaurant-es" &&
                     t.isFinal &&
                     t.text.length > 2 &&
                     t.translation !== "" && (
-                      <div className="mt-1 text-xs italic text-neutral-400">
-                        {t.translation ?? "Translating..."}
-                      </div>
+                      <p className="mt-1 italic text-muted-foreground">
+                        {t.translation ?? "Translating…"}
+                      </p>
                     )}
                 </div>
               </div>
@@ -237,7 +218,6 @@ function InboundTestPanel({ agentKey }: { agentKey: string }) {
     setIsConnecting(true);
     setError("");
     try {
-      // Ensure the agent process is running before connecting
       await fetch("/api/agents/process", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -277,41 +257,28 @@ function InboundTestPanel({ agentKey }: { agentKey: string }) {
 
   if (!token) {
     return (
-      <div className="flex flex-col items-center py-8 gap-5">
-        <div className="w-16 h-16 rounded-full bg-blue-600/20 flex items-center justify-center">
-          <svg
-            className="w-8 h-8 text-blue-400"
-            fill="none"
-            viewBox="0 0 24 24"
-            stroke="currentColor"
-          >
-            <path
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              strokeWidth={2}
-              d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z"
-            />
-          </svg>
+      <div className="flex flex-col items-center py-8 gap-4">
+        <div className="size-14 rounded-full bg-accent flex items-center justify-center">
+          <Mic className="size-6 text-primary" />
         </div>
-        <p className="text-sm text-neutral-400 text-center">
-          Test this agent via your browser microphone without placing a phone
-          call.
+        <p className="text-xs text-muted-foreground text-center max-w-[240px]">
+          Talk to your agent directly — no phone number needed.
         </p>
         {error && (
-          <div className="text-red-400 text-xs bg-red-900/20 p-3 rounded-lg border border-red-900/50 w-full">
+          <div className="text-xs text-destructive bg-destructive/5 border border-destructive/20 px-3 py-2 rounded-lg w-full">
             {error}
           </div>
         )}
-        <button
+        <Button
           onClick={connectToAgent}
           disabled={isConnecting}
-          className="w-full px-4 py-2.5 bg-blue-600 hover:bg-blue-700 disabled:bg-blue-800 disabled:cursor-not-allowed rounded-lg font-medium text-sm transition-colors flex items-center justify-center gap-2"
+          className="w-full"
         >
           {isConnecting && (
-            <div className="w-4 h-4 border-2 border-white/20 border-t-white rounded-full animate-spin" />
+            <span className="size-3.5 border-2 border-primary-foreground/30 border-t-primary-foreground rounded-full animate-spin" />
           )}
-          {isConnecting ? "Connecting..." : "Connect Microphone"}
-        </button>
+          {isConnecting ? "Connecting…" : "Start talking"}
+        </Button>
       </div>
     );
   }
@@ -334,25 +301,13 @@ function InboundTestPanel({ agentKey }: { agentKey: string }) {
       }}
       data-lk-theme="default"
     >
-      <div className="flex flex-col items-center gap-3 pt-4">
-        <div className="w-12 h-12 rounded-full bg-blue-600/20 flex items-center justify-center">
-          <div className="w-9 h-9 rounded-full bg-blue-600 animate-pulse flex items-center justify-center">
-            <svg
-              className="w-5 h-5 text-white"
-              fill="none"
-              viewBox="0 0 24 24"
-              stroke="currentColor"
-            >
-              <path
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                strokeWidth={2}
-                d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z"
-              />
-            </svg>
+      <div className="flex flex-col items-center gap-2.5 pt-4">
+        <div className="size-11 rounded-full bg-accent flex items-center justify-center">
+          <div className="size-8 rounded-full bg-primary animate-pulse flex items-center justify-center">
+            <Mic className="size-4 text-white" />
           </div>
         </div>
-        <p className="text-sm text-white font-medium">Connected to Agent</p>
+        <p className="text-sm font-medium text-foreground">You&apos;re live</p>
         <VoiceAssistantControlBar controls={{ leave: true }} />
         <RoomAudioRenderer />
       </div>
@@ -377,39 +332,41 @@ function OutboundCallPanel({ agentKey }: { agentKey: string }) {
 
       const res = await fetch("/api/calls/outbound", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ number: phoneNumber, agentKey }),
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${process.env.NEXT_PUBLIC_INTERNAL_API_SECRET}`,
+        },
+        body: JSON.stringify({ toNumber: phoneNumber, agentKey }),
       });
       if (!res.ok) throw new Error("Failed to trigger call");
       setPhoneNumber("");
     } catch (e) {
       console.error(e);
-      alert("Error triggering call");
+      console.error("Error triggering call");
     } finally {
       setIsCalling(false);
     }
   };
 
   return (
-    <div className="flex flex-col gap-4 py-4">
-      <p className="text-sm text-neutral-400">
-        Enter a phone number to initiate an outbound call.
+    <div className="flex flex-col gap-3 py-4">
+      <p className="text-xs text-muted-foreground">
+        We&apos;ll call you so you can hear your agent in action.
       </p>
-      <input
-        type="text"
-        placeholder="+1234567890"
+      <Input
+        type="tel"
+        placeholder="+1 (555) 000-0000"
         value={phoneNumber}
         onChange={(e) => setPhoneNumber(e.target.value)}
         onKeyDown={(e) => e.key === "Enter" && handleCall()}
-        className="w-full bg-neutral-900 border border-neutral-700 rounded-lg px-4 py-2 text-white placeholder-neutral-500 focus:outline-none focus:border-blue-500 transition-colors text-sm"
       />
-      <button
+      <Button
         onClick={handleCall}
         disabled={isCalling || !phoneNumber}
-        className="w-full px-4 py-2.5 bg-blue-600 hover:bg-blue-700 disabled:bg-neutral-700 disabled:text-neutral-500 rounded-lg font-medium text-sm transition-colors"
+        className="w-full"
       >
-        {isCalling ? "Calling..." : "Call"}
-      </button>
+        {isCalling ? "Calling…" : "Call"}
+      </Button>
     </div>
   );
 }
@@ -422,10 +379,10 @@ export function TestCallPanel({
   agentKey: string;
 }) {
   return (
-    <div className="bg-neutral-800 border border-neutral-700 rounded-xl overflow-hidden">
-      <div className="px-4 py-3 border-b border-neutral-700">
-        <h2 className="text-sm font-semibold text-white uppercase tracking-wide">
-          Test Call
+    <div className="bg-card border border-border rounded-xl overflow-hidden shadow-sm">
+      <div className="px-4 py-3.5 border-b border-border bg-secondary/40">
+        <h2 className="text-xs font-semibold text-foreground uppercase tracking-wide">
+          Try it out
         </h2>
       </div>
       <div className="px-4 pb-4">

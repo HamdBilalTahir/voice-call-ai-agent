@@ -2,47 +2,50 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { ChevronRight } from "lucide-react";
+
+const UNCLICKABLE = new Set(["agents", "outbound", "inbound"]);
 
 export function Breadcrumbs() {
   const pathname = usePathname();
   const segments = pathname.split("/").filter(Boolean);
 
-  if (segments.length === 0) {
-    return null;
-  }
+  if (segments.length === 0) return null;
 
   return (
-    <nav className="flex items-center space-x-2 text-sm text-neutral-400 mb-6">
-      <Link href="/" className="hover:text-white transition-colors">
+    <nav
+      aria-label="Breadcrumb"
+      className="flex items-center gap-1 text-sm text-muted-foreground"
+    >
+      <Link href="/" className="hover:text-foreground transition-colors">
         Home
       </Link>
+
       {segments.map((segment, index) => {
         const path = `/${segments.slice(0, index + 1).join("/")}`;
         const isLast = index === segments.length - 1;
-        // Make non-leaf segments unclickable if they correspond to intermediate routes that don't exist
-        const isUnclickable =
-          segment.toLowerCase() === "agents" ||
-          segment.toLowerCase() === "outbound" ||
-          segment.toLowerCase() === "inbound";
+        const isUnclickable = UNCLICKABLE.has(segment.toLowerCase());
 
         return (
-          <div key={path} className="flex items-center space-x-2">
-            <span className="text-neutral-600">/</span>
+          <span key={path} className="flex items-center gap-1">
+            <ChevronRight className="size-3.5 text-border" aria-hidden />
             {isLast || isUnclickable ? (
               <span
-                className={`capitalize ${isLast ? "text-white" : "text-neutral-500"}`}
+                className={
+                  isLast ? "text-foreground font-medium" : "capitalize"
+                }
               >
-                {segment}
+                {decodeURIComponent(segment)}
               </span>
             ) : (
               <Link
                 href={path}
-                className="hover:text-white transition-colors capitalize"
+                className="hover:text-foreground transition-colors capitalize"
               >
-                {segment}
+                {decodeURIComponent(segment)}
               </Link>
             )}
-          </div>
+          </span>
         );
       })}
     </nav>

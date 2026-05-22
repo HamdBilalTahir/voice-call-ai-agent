@@ -1,387 +1,958 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 "use client";
 
+import { useState, useEffect, useRef, useCallback } from "react";
+import { Room, RoomEvent } from "livekit-client";
 import {
-  LiveKitRoom,
-  RoomAudioRenderer,
-  VoiceAssistantControlBar,
-  useRoomContext,
-  useLocalParticipant,
-} from "@livekit/components-react";
-import "@livekit/components-styles";
-import { useEffect, useState, useRef } from "react";
+  MicOff,
+  PauseCircle,
+  PhoneOff,
+  UserPlus,
+  ChevronDown,
+  Check,
+  Share2,
+  Flag,
+  Smile,
+  Meh,
+  Frown,
+  Phone,
+} from "lucide-react";
+import { AgentConfig } from "@/lib/agents/registry";
+import {
+  Dialog,
+  DialogClose,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
+import { Skeleton } from "@/components/ui/skeleton";
+import { useToast } from "@/components/ui/toast";
 import { translateToEnglish } from "@/lib/translation";
+import type { CallSummary } from "@/app/api/calls/summary/route";
+
+// ── Types ─────────────────────────────────────────────────────────────────────
+
+type CallStatus =
+  | "dialing"
+  | "ringing"
+  | "connected"
+  | "ended"
+  | "summarizing"
+  | "summary";
 
 interface TranscriptLine {
-  segmentId: string;
+  id: string;
   speaker: "Agent" | "Caller";
   text: string;
+  timestamp: number;
   translation?: string;
   isFinal: boolean;
 }
 
-function TranscriptView({ agentKey }: { agentKey: string }) {
-  const room = useRoomContext();
-  const { localParticipant } = useLocalParticipant();
-  const [transcripts, setTranscripts] = useState<TranscriptLine[]>([]);
-  const [copied, setCopied] = useState(false);
-  const scrollRef = useRef<HTMLDivElement>(null);
-  const localIdentityRef = useRef<string | undefined>(undefined);
-  // Tracks which segmentIds have already triggered translation (interim + final both complete)
-  const translatedSegmentsRef = useRef<Set<string>>(new Set());
-  const copyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+// ── Constants ─────────────────────────────────────────────────────────────────
 
-  useEffect(() => {
-    localIdentityRef.current = localParticipant?.identity;
-  }, [localParticipant?.identity]);
+const WAVE_HEIGHTS = [4, 10, 18, 24, 16, 28, 32, 22, 26, 18, 12, 8, 16, 24, 20];
 
-  useEffect(() => {
-    if (!room) return;
-    let mounted = true;
+const STATUS_CONFIG: Record<CallStatus, { dot: string; label: string }> = {
+  dialing: { dot: "bg-warning", label: "Dialing…" },
+  ringing: { dot: "bg-warning animate-pulse", label: "Ringing…" },
+  connected: { dot: "bg-success animate-pulse", label: "Connected" },
+  ended: { dot: "bg-destructive", label: "Ended" },
+  summarizing: { dot: "bg-muted-foreground", label: "Summarizing…" },
+  summary: { dot: "bg-muted-foreground", label: "Ended" },
+};
 
-    // Per LiveKit docs: each segment produces two streams (interim + final) sharing lk.segment_id.
-    // We merge them by segment_id so only one bubble appears per utterance.
-    // for-await yields delta CHUNKS — we must accumulate them manually.
-    const handler = async (reader: any, participantInfo: any) => {
-      const segmentId =
-        reader.info.attributes?.["lk.segment_id"] || reader.info.id;
-      // lk.transcription_final = "false" → interim STT stream (partial text, skip translation)
-      // lk.transcription_final = "true"  → final STT stream (complete text, translate)
-      // not set                           → agent speech stream (always translate)
-      const isInterimStream =
-        reader.info.attributes?.["lk.transcription_final"] === "false";
-      const isAgent =
-        participantInfo.identity !== localIdentityRef.current &&
-        !participantInfo.identity.startsWith("phone-");
-      const speaker: "Agent" | "Caller" = isAgent ? "Agent" : "Caller";
+const TRANSLATE_LANGS = [
+  { code: "en", label: "English", disabled: false },
+  { code: "es", label: "Spanish (coming soon)", disabled: true },
+  { code: "ar", label: "Arabic (coming soon)", disabled: true },
+  { code: "fr", label: "French (coming soon)", disabled: true },
+];
 
-      // Add entry only if it doesn't exist yet (interim stream arrives first)
-      setTranscripts((prev) => {
-        if (prev.some((t) => t.segmentId === segmentId)) return prev;
-        return [...prev, { segmentId, speaker, text: "", isFinal: false }];
-      });
+// ── Helpers ───────────────────────────────────────────────────────────────────
 
-      // Accumulate delta chunks into full text
-      let accumulated = "";
-      for await (const chunk of reader) {
-        accumulated += chunk;
-        if (!mounted) return;
-        setTranscripts((prev) =>
-          prev.map((t) =>
-            t.segmentId === segmentId ? { ...t, text: accumulated } : t,
-          ),
-        );
-      }
+function formatDuration(secs: number): string {
+  const m = Math.floor(secs / 60);
+  const s = secs % 60;
+  return `${m}:${s.toString().padStart(2, "0")}`;
+}
 
-      if (!mounted) return;
+function transcriptToText(lines: TranscriptLine[]): string {
+  return lines
+    .filter((l) => l.isFinal && l.text.trim())
+    .map((l) => `${l.speaker}: ${l.text}`)
+    .join("\n");
+}
 
-      setTranscripts((prev) =>
-        prev.map((t) =>
-          t.segmentId === segmentId ? { ...t, isFinal: true } : t,
-        ),
-      );
+// ── AgentWaveform ─────────────────────────────────────────────────────────────
 
-      // Skip translation only for interim CALLER streams (partial STT text).
-      // Agent speech may arrive with lk.transcription_final="false" but is always complete — translate it.
-      const skipAsInterim = isInterimStream && !isAgent;
-      if (
-        agentKey === "restaurant-es" &&
-        accumulated.length > 2 &&
-        !skipAsInterim &&
-        !translatedSegmentsRef.current.has(segmentId)
-      ) {
-        translatedSegmentsRef.current.add(segmentId);
-        const translation = await translateToEnglish(
-          accumulated,
-          (partial: any) => {
-            setTranscripts((prev) =>
-              prev.map((t) =>
-                t.segmentId === segmentId ? { ...t, translation: partial } : t,
-              ),
-            );
-          },
-        );
-        // Final call: clears row if English (""), or sets the complete translated text
-        setTranscripts((prev) =>
-          prev.map((t) =>
-            t.segmentId === segmentId ? { ...t, translation } : t,
-          ),
-        );
-      }
-    };
+function AgentWaveform({ active }: { active: boolean }) {
+  return (
+    <div className="flex items-center gap-0.5 h-10">
+      {WAVE_HEIGHTS.map((h, i) => (
+        <div
+          key={i}
+          className="w-1 bg-primary rounded-full transition-all duration-300"
+          style={{
+            height: active ? h : 3,
+            transitionDelay: `${i * 40}ms`,
+            opacity: active ? 1 : 0.25,
+          }}
+        />
+      ))}
+    </div>
+  );
+}
 
-    room.registerTextStreamHandler("lk.transcription", handler);
+// ── DialProgress ──────────────────────────────────────────────────────────────
 
-    return () => {
-      mounted = false;
-      room.unregisterTextStreamHandler("lk.transcription");
-    };
-  }, [room, agentKey]);
-
-  useEffect(() => {
-    if (scrollRef.current) {
-      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
-    }
-  }, [transcripts]);
-
-  useEffect(() => {
-    return () => {
-      if (copyTimerRef.current) clearTimeout(copyTimerRef.current);
-    };
-  }, []);
-
-  const copyTranscript = () => {
-    const text = transcripts
-      .filter((t) => t.isFinal && t.text.trim())
-      .map((t) => `${t.speaker}: ${t.text}`)
-      .join("\n");
-    navigator.clipboard.writeText(text).then(() => {
-      setCopied(true);
-      if (copyTimerRef.current) clearTimeout(copyTimerRef.current);
-      copyTimerRef.current = setTimeout(() => setCopied(false), 2000);
-    });
-  };
+function DialProgress({
+  status,
+  toNumber,
+}: {
+  status: CallStatus;
+  toNumber?: string;
+}) {
+  const steps: { label: string; id: CallStatus }[] = [
+    { label: "Dialing", id: "dialing" },
+    { label: "Ringing", id: "ringing" },
+    { label: "Connected", id: "connected" },
+  ];
+  const activeIdx = status === "dialing" ? 0 : status === "ringing" ? 1 : 2;
 
   return (
-    <div className="w-full h-[480px] bg-neutral-900 border border-neutral-700 rounded-xl overflow-hidden flex flex-col mt-4">
-      <div className="bg-neutral-800 px-4 py-2 border-b border-neutral-700 text-sm font-medium text-white flex items-center justify-between">
-        <span>Live Transcript</span>
-        {transcripts.length > 0 && (
-          <button
-            onClick={copyTranscript}
-            className="text-xs text-neutral-400 hover:text-white transition-colors flex items-center gap-1"
-          >
-            {copied ? (
-              <>
-                <svg
-                  className="w-3.5 h-3.5 text-green-400"
-                  fill="none"
-                  viewBox="0 0 24 24"
-                  stroke="currentColor"
-                >
-                  <path
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    strokeWidth={2}
-                    d="M5 13l4 4L19 7"
-                  />
-                </svg>
-                <span className="text-green-400">Copied</span>
-              </>
-            ) : (
-              <>
-                <svg
-                  className="w-3.5 h-3.5"
-                  fill="none"
-                  viewBox="0 0 24 24"
-                  stroke="currentColor"
-                >
-                  <path
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    strokeWidth={2}
-                    d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"
-                  />
-                </svg>
-                Copy
-              </>
-            )}
-          </button>
-        )}
+    <div className="flex flex-col items-center justify-center gap-6 flex-1 py-16">
+      <div
+        className={`size-20 rounded-full flex items-center justify-center ${
+          status === "connected" ? "bg-success/10" : "bg-accent"
+        }`}
+      >
+        <Phone
+          className={`size-9 transition-colors ${
+            status === "connected"
+              ? "text-success"
+              : "text-primary animate-pulse"
+          }`}
+        />
       </div>
-      <div ref={scrollRef} className="flex-1 overflow-y-auto p-4 space-y-4">
-        {transcripts.length === 0 ? (
-          <div className="text-neutral-500 text-center text-sm py-8">
-            Waiting for someone to speak...
-          </div>
-        ) : (
-          transcripts.map((t) => {
-            const isAgent = t.speaker === "Agent";
-            return (
+
+      {toNumber && (
+        <p className="text-base font-semibold text-foreground font-mono tracking-wide">
+          {toNumber}
+        </p>
+      )}
+
+      <div className="flex items-center gap-2">
+        {steps.map((step, idx) => (
+          <div key={step.id} className="flex items-center gap-2">
+            <div className="flex items-center gap-1.5">
               <div
-                key={t.segmentId}
-                className={`flex flex-col max-w-[90%] ${
-                  isAgent
-                    ? "items-start self-start"
-                    : "items-end self-end ml-auto"
+                className={`size-2 rounded-full transition-colors ${
+                  idx < activeIdx
+                    ? "bg-success"
+                    : idx === activeIdx
+                      ? "bg-primary animate-pulse"
+                      : "bg-muted-foreground/25"
+                }`}
+              />
+              <span
+                className={`text-xs font-medium transition-colors ${
+                  idx <= activeIdx
+                    ? "text-foreground"
+                    : "text-muted-foreground/50"
                 }`}
               >
-                <div className="flex items-center gap-2 mb-1">
+                {step.label}
+              </span>
+            </div>
+            {idx < 2 && <div className="w-8 h-px bg-border" />}
+          </div>
+        ))}
+      </div>
+
+      <p className="text-xs text-muted-foreground text-center max-w-xs">
+        {status === "dialing" && "Placing your call via Twilio SIP…"}
+        {status === "ringing" && "Phone is ringing on the other end…"}
+        {status === "connected" &&
+          "Call connected — transcript will appear shortly."}
+      </p>
+    </div>
+  );
+}
+
+// ── PostCallSummary ───────────────────────────────────────────────────────────
+
+function PostCallSummary({
+  summary,
+  transcript,
+  onClose,
+}: {
+  summary: CallSummary | null;
+  transcript: TranscriptLine[];
+  onClose: () => void;
+}) {
+  const { toast } = useToast();
+
+  const shareTranscript = () => {
+    const text = transcriptToText(transcript);
+    navigator.clipboard
+      .writeText(text)
+      .then(() => toast({ message: "Transcript copied.", variant: "success" }));
+  };
+
+  const sentimentIcon =
+    summary?.sentiment === "positive" ? (
+      <Smile className="size-5 text-success" />
+    ) : summary?.sentiment === "negative" ? (
+      <Frown className="size-5 text-destructive" />
+    ) : (
+      <Meh className="size-5 text-warning" />
+    );
+
+  return (
+    <div className="flex flex-col gap-6 overflow-y-auto flex-1 px-6 py-5">
+      <div className="flex items-center justify-between">
+        <div>
+          <h3 className="text-base font-semibold text-foreground">
+            Call Summary
+          </h3>
+          <p className="text-xs text-muted-foreground mt-0.5">
+            AI-generated · {transcript.filter((l) => l.isFinal).length} lines
+          </p>
+        </div>
+        <div className="flex items-center gap-3">
+          {sentimentIcon}
+          <div className="flex flex-col items-end gap-1">
+            <span className="text-xs font-medium text-foreground capitalize">
+              {summary?.sentiment ?? "neutral"} sentiment
+            </span>
+            <div className="w-24 h-1.5 bg-muted rounded-full overflow-hidden">
+              <div
+                className={`h-full rounded-full transition-all ${
+                  (summary?.sentimentScore ?? 50) >= 60
+                    ? "bg-success"
+                    : (summary?.sentimentScore ?? 50) >= 40
+                      ? "bg-warning"
+                      : "bg-destructive"
+                }`}
+                style={{ width: `${summary?.sentimentScore ?? 50}%` }}
+              />
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* Bullets */}
+      <div className="flex flex-col gap-2">
+        <h4 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+          Key Points
+        </h4>
+        {summary ? (
+          <ul className="flex flex-col gap-2">
+            {summary.bullets.map((b, i) => (
+              <li
+                key={i}
+                className="flex items-start gap-2.5 text-sm text-foreground"
+              >
+                <div className="size-1.5 rounded-full bg-primary shrink-0 mt-[7px]" />
+                {b}
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <div className="flex flex-col gap-2">
+            <Skeleton className="h-4 w-full" />
+            <Skeleton className="h-4 w-4/5" />
+            <Skeleton className="h-4 w-3/4" />
+          </div>
+        )}
+      </div>
+
+      {/* Action items */}
+      {(summary?.actionItems ?? []).length > 0 && (
+        <div className="flex flex-col gap-2">
+          <h4 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+            Action Items
+          </h4>
+          <ul className="flex flex-col gap-2">
+            {summary!.actionItems.map((item, i) => (
+              <li key={i} className="flex items-start gap-2.5">
+                <div className="size-4 rounded border border-border flex items-center justify-center shrink-0 mt-0.5">
+                  <Check className="size-2.5 text-muted-foreground" />
+                </div>
+                <span className="text-sm text-foreground">{item}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {/* Full transcript */}
+      {transcript.length > 0 && (
+        <div className="flex flex-col gap-2">
+          <h4 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+            Full Transcript
+          </h4>
+          <div className="bg-muted/40 border border-border rounded-xl p-3 max-h-44 overflow-y-auto space-y-2">
+            {transcript
+              .filter((l) => l.isFinal && l.text.trim())
+              .map((l) => (
+                <p
+                  key={l.id}
+                  className="text-xs text-foreground leading-relaxed"
+                >
                   <span
-                    className={`text-[10px] font-medium ${
-                      isAgent ? "text-blue-400" : "text-green-400"
+                    className={`font-semibold ${
+                      l.speaker === "Agent" ? "text-primary" : "text-success"
                     }`}
                   >
-                    {isAgent ? "Agent" : "Caller"}
-                  </span>
-                </div>
-                <div
-                  className={`px-3 py-2 rounded-xl text-sm ${
-                    isAgent
-                      ? "bg-blue-600/20 border border-blue-500/30 text-blue-50"
-                      : "bg-neutral-700 border border-neutral-600 text-neutral-50"
-                  }`}
-                >
-                  <div>{t.text}</div>
-                  {agentKey === "restaurant-es" &&
-                    t.isFinal &&
-                    t.text.length > 2 &&
-                    t.translation !== "" && (
-                      <div className="mt-1 text-xs italic text-neutral-400">
-                        {t.translation ?? "Translating..."}
-                      </div>
-                    )}
-                </div>
-              </div>
-            );
-          })
-        )}
+                    {l.speaker}:
+                  </span>{" "}
+                  {l.text}
+                </p>
+              ))}
+          </div>
+        </div>
+      )}
+
+      {/* CTAs */}
+      <div className="flex items-center gap-3 pt-1 border-t border-border mt-auto">
+        <Button size="sm" onClick={onClose}>
+          Done
+        </Button>
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={shareTranscript}
+          className="gap-1.5"
+        >
+          <Share2 className="size-3.5" />
+          Share transcript
+        </Button>
+        <Button
+          variant="ghost"
+          size="sm"
+          className="ml-auto gap-1.5 text-muted-foreground"
+          onClick={() =>
+            toast({ message: "Got it — we'll take a look.", variant: "info" })
+          }
+        >
+          <Flag className="size-3.5" />
+          Report issue
+        </Button>
       </div>
     </div>
   );
 }
 
-interface TestCallModalProps {
-  agentKey: string;
+// ── TestCallModal ─────────────────────────────────────────────────────────────
+
+export function TestCallModal({
+  open,
+  onClose,
+  agent,
+  agentKey,
+  toNumber,
+  roomName,
+}: {
+  open: boolean;
   onClose: () => void;
-}
+  agent: AgentConfig;
+  agentKey: string;
+  toNumber?: string;
+  roomName?: string;
+}) {
+  const { toast } = useToast();
+  const [status, setStatus] = useState<CallStatus>("dialing");
+  const [transcript, setTranscript] = useState<TranscriptLine[]>([]);
+  const [summary, setSummary] = useState<CallSummary | null>(null);
+  const [duration, setDuration] = useState(0);
+  const [connectedAt, setConnectedAt] = useState<number | null>(null);
+  const [showEndConfirm, setShowEndConfirm] = useState(false);
+  const [showJumpToLatest, setShowJumpToLatest] = useState(false);
 
-export function TestCallModal({ agentKey, onClose }: TestCallModalProps) {
-  const [token, setToken] = useState<string>("");
-  const [url, setUrl] = useState<string>("");
-  const [isConnecting, setIsConnecting] = useState(false);
-  const [error, setError] = useState("");
+  const roomRef = useRef<Room | null>(null);
+  const transcriptRef = useRef<TranscriptLine[]>([]);
+  const statusRef = useRef<CallStatus>("dialing");
+  const scrollRef = useRef<HTMLDivElement>(null);
 
-  const connectToAgent = async () => {
-    setIsConnecting(true);
-    setError("");
-    try {
-      const roomName = `test-${agentKey}-${Date.now()}`;
+  useEffect(() => {
+    statusRef.current = status;
+  }, [status]);
 
-      // 1. Get LiveKit Token
-      const tokenRes = await fetch("/api/livekit/token", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          roomName,
-          participantName: "Test User",
-          participantIdentity: `test-user-${Math.random().toString(36).substring(7)}`,
-        }),
-      });
+  // Reset on open
+  useEffect(() => {
+    if (!open) return;
+    setStatus("dialing");
+    setTranscript([]);
+    setSummary(null);
+    setDuration(0);
+    setConnectedAt(null);
+    setShowEndConfirm(false);
+    setShowJumpToLatest(false);
+    transcriptRef.current = [];
+  }, [open]);
 
-      if (!tokenRes.ok) throw new Error("Failed to get token");
-      const tokenData = await tokenRes.json();
+  // Dialing → ringing after 2 s
+  useEffect(() => {
+    if (!open || status !== "dialing") return;
+    const t = setTimeout(() => {
+      if (statusRef.current === "dialing") setStatus("ringing");
+    }, 2000);
+    return () => clearTimeout(t);
+  }, [open, status]);
 
-      // 2. Dispatch Agent to Room
-      const dispatchRes = await fetch("/api/calls/test", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ roomName, agentKey }),
-      });
+  // Duration ticker
+  useEffect(() => {
+    if (!connectedAt) return;
+    const id = setInterval(
+      () => setDuration(Math.floor((Date.now() - connectedAt) / 1000)),
+      1000,
+    );
+    return () => clearInterval(id);
+  }, [connectedAt]);
 
-      if (!dispatchRes.ok) throw new Error("Failed to dispatch agent");
-
-      setToken(tokenData.token);
-      setUrl(tokenData.url);
-    } catch (e: any) {
-      console.error(e);
-      setError(e.message || "Failed to connect to agent");
-    } finally {
-      setIsConnecting(false);
+  // Auto-scroll when at bottom
+  useEffect(() => {
+    if (!showJumpToLatest && scrollRef.current) {
+      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
     }
+  }, [transcript, showJumpToLatest]);
+
+  // LiveKit observer
+  useEffect(() => {
+    if (!open || !roomName) return;
+    let mounted = true;
+
+    const connect = async () => {
+      try {
+        const res = await fetch("/api/livekit/token", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            roomName,
+            participantName: "Dashboard Observer",
+            participantIdentity: `observer-${Math.random().toString(36).slice(7)}`,
+          }),
+        });
+        if (!res.ok) throw new Error("Token request failed");
+        const { token, url } = await res.json();
+
+        const room = new Room();
+        roomRef.current = room;
+        const translatedIds = new Set<string>();
+
+        room.registerTextStreamHandler(
+          "lk.transcription",
+          async (reader: any, participantInfo: any) => {
+            const segmentId =
+              reader.info.attributes?.["lk.segment_id"] || reader.info.id;
+            const isInterimStream =
+              reader.info.attributes?.["lk.transcription_final"] === "false";
+            const isAgent = !participantInfo.identity.startsWith("phone-");
+            const speaker: "Agent" | "Caller" = isAgent ? "Agent" : "Caller";
+
+            if (!transcriptRef.current.some((l) => l.id === segmentId)) {
+              transcriptRef.current = [
+                ...transcriptRef.current,
+                {
+                  id: segmentId,
+                  speaker,
+                  text: "",
+                  timestamp: Date.now(),
+                  isFinal: false,
+                },
+              ];
+              if (mounted) setTranscript([...transcriptRef.current]);
+            }
+
+            let accumulated = "";
+            for await (const chunk of reader) {
+              accumulated += chunk;
+              if (!mounted) return;
+              transcriptRef.current = transcriptRef.current.map((l) =>
+                l.id === segmentId ? { ...l, text: accumulated } : l,
+              );
+              setTranscript([...transcriptRef.current]);
+            }
+
+            if (!mounted) return;
+            transcriptRef.current = transcriptRef.current.map((l) =>
+              l.id === segmentId ? { ...l, isFinal: true } : l,
+            );
+            setTranscript([...transcriptRef.current]);
+
+            const skipAsInterim = isInterimStream && !isAgent;
+            if (
+              agentKey === "restaurant-es" &&
+              accumulated.length > 2 &&
+              !skipAsInterim &&
+              !translatedIds.has(segmentId)
+            ) {
+              translatedIds.add(segmentId);
+              await translateToEnglish(accumulated, (partial) => {
+                transcriptRef.current = transcriptRef.current.map((l) =>
+                  l.id === segmentId ? { ...l, translation: partial } : l,
+                );
+                if (mounted) setTranscript([...transcriptRef.current]);
+              });
+            }
+          },
+        );
+
+        room.on(RoomEvent.Connected, () => {
+          if (!mounted) return;
+          setStatus("connected");
+          setConnectedAt(Date.now());
+        });
+
+        room.on(RoomEvent.Disconnected, async () => {
+          if (!mounted) return;
+          setStatus("summarizing");
+          const text = transcriptToText(transcriptRef.current);
+          try {
+            const sumRes = await fetch("/api/calls/summary", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ transcript: text }),
+            });
+            if (mounted) {
+              setSummary(await sumRes.json());
+              setStatus("summary");
+            }
+          } catch {
+            if (mounted) setStatus("summary");
+          }
+        });
+
+        await room.connect(url, token);
+      } catch (err: any) {
+        console.error("[TestCallModal]", err);
+        if (mounted) {
+          toast({
+            message:
+              "Couldn't connect to the call — check your network and try again.",
+            variant: "error",
+          });
+          setStatus("ended");
+        }
+      }
+    };
+
+    connect();
+
+    return () => {
+      mounted = false;
+      roomRef.current?.disconnect();
+      roomRef.current = null;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, roomName]);
+
+  const endCall = useCallback(() => {
+    setShowEndConfirm(false);
+    if (roomRef.current) {
+      roomRef.current.disconnect();
+    } else {
+      setStatus("ended");
+    }
+  }, []);
+
+  const handleClose = useCallback(() => {
+    const active =
+      status !== "ended" && status !== "summary" && status !== "summarizing";
+    if (active) {
+      setShowEndConfirm(true);
+    } else {
+      onClose();
+    }
+  }, [status, onClose]);
+
+  const handleScroll = () => {
+    if (!scrollRef.current) return;
+    const { scrollTop, scrollHeight, clientHeight } = scrollRef.current;
+    setShowJumpToLatest(scrollHeight - scrollTop - clientHeight > 80);
   };
 
+  const { dot, label } = STATUS_CONFIG[status];
+  const isActive = status === "connected";
+  const showTranscript =
+    status === "connected" || status === "ended" || status === "summarizing";
+
+  const [mobileTxTab, setMobileTxTab] = useState<"original" | "translation">(
+    "original",
+  );
+
   return (
-    <div className="fixed inset-0 bg-black/80 z-50 flex items-center justify-center p-4">
-      <div
-        className="bg-neutral-900 border border-neutral-700 rounded-2xl p-6 relative max-h-[90vh] overflow-y-auto"
-        style={{ width: "min(900px, calc(100vw - 2rem))" }}
-      >
-        <button
-          onClick={onClose}
-          className="absolute top-4 right-4 text-neutral-400 hover:text-white"
-        >
-          <svg
-            className="w-6 h-6"
-            fill="none"
-            viewBox="0 0 24 24"
-            stroke="currentColor"
+    <Dialog
+      open={open}
+      onClose={handleClose}
+      mobileSheet
+      className="sm:max-w-4xl sm:h-[82vh] h-[92vh] flex flex-col p-0 overflow-hidden sm:rounded-2xl"
+    >
+      {/* ── Header ── */}
+      <DialogHeader className="px-5 py-3.5 border-b border-border flex items-center justify-between shrink-0">
+        <div className="flex items-center gap-3 min-w-0">
+          <div className="min-w-0">
+            <DialogTitle className="text-sm font-semibold text-foreground truncate">
+              {agent.name}
+            </DialogTitle>
+            <p className="text-xs text-muted-foreground">Listening in</p>
+          </div>
+          <Badge
+            variant={isActive ? "success" : "secondary"}
+            className="gap-1.5 shrink-0"
           >
-            <path
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              strokeWidth={2}
-              d="M6 18L18 6M6 6l12 12"
-            />
-          </svg>
-        </button>
+            <span className={`size-1.5 rounded-full ${dot}`} />
+            {label}
+          </Badge>
+          {isActive && duration > 0 && (
+            <span className="text-xs font-mono text-muted-foreground tabular-nums shrink-0">
+              {formatDuration(duration)}
+            </span>
+          )}
+        </div>
 
-        <h2 className="text-2xl font-bold text-white mb-6">Test Call</h2>
-
-        {!token ? (
-          <div className="flex flex-col items-center py-8">
-            <p className="text-neutral-400 text-center mb-6">
-              Connect via your browser microphone to test the {agentKey} agent
-              directly without placing a phone call.
-            </p>
-            {error && (
-              <div className="text-red-400 text-sm mb-4 bg-red-900/20 p-3 rounded-lg border border-red-900/50">
-                {error}
-              </div>
-            )}
+        {showEndConfirm ? (
+          <div className="flex items-center gap-2 shrink-0 ml-4">
+            <span className="text-xs text-foreground">End call?</span>
             <button
-              onClick={connectToAgent}
-              disabled={isConnecting}
-              className="px-6 py-3 bg-blue-600 hover:bg-blue-700 disabled:bg-blue-800 disabled:cursor-not-allowed rounded-lg font-semibold transition-colors flex items-center gap-2"
+              onClick={endCall}
+              className="text-xs text-destructive font-semibold hover:text-destructive/80"
             >
-              {isConnecting && (
-                <div className="w-4 h-4 border-2 border-white/20 border-t-white rounded-full animate-spin" />
-              )}
-              {isConnecting ? "Connecting..." : "Connect Microphone"}
+              End
+            </button>
+            <button
+              onClick={() => setShowEndConfirm(false)}
+              className="text-xs text-muted-foreground hover:text-foreground"
+            >
+              Cancel
             </button>
           </div>
         ) : (
-          <LiveKitRoom
-            video={false}
-            audio={true}
-            token={token}
-            serverUrl={url}
-            connect={true}
-            onDisconnected={onClose}
-            className="flex flex-col items-center justify-center py-8"
-            data-lk-theme="default"
-          >
-            <div className="bg-neutral-800 rounded-xl p-6 w-full flex flex-col items-center gap-6 border border-neutral-700">
-              <div className="w-16 h-16 rounded-full bg-blue-600/20 flex items-center justify-center">
-                <div className="w-12 h-12 rounded-full bg-blue-600 animate-pulse flex items-center justify-center">
-                  <svg
-                    className="w-6 h-6 text-white"
-                    fill="none"
-                    viewBox="0 0 24 24"
-                    stroke="currentColor"
-                  >
-                    <path
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                      strokeWidth={2}
-                      d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z"
-                    />
-                  </svg>
+          <DialogClose onClose={handleClose} />
+        )}
+      </DialogHeader>
+
+      {/* ── Summary view ── */}
+      {status === "summary" || status === "summarizing" ? (
+        <PostCallSummary
+          summary={status === "summarizing" ? null : summary}
+          transcript={transcript}
+          onClose={onClose}
+        />
+      ) : (
+        <div className="flex flex-col flex-1 min-h-0">
+          {/* ── Call controls (~25%) ── */}
+          <div className="shrink-0 px-5 py-3.5 border-b border-border bg-secondary/30">
+            <div className="flex items-center justify-between gap-6">
+              <div className="flex items-center gap-4 min-w-0">
+                {isActive ? (
+                  <AgentWaveform active />
+                ) : (
+                  <div className="size-10 rounded-full bg-accent flex items-center justify-center shrink-0">
+                    <Phone className="size-5 text-primary" />
+                  </div>
+                )}
+                <div className="min-w-0">
+                  {toNumber && (
+                    <p className="text-sm font-semibold text-foreground font-mono truncate">
+                      {toNumber}
+                    </p>
+                  )}
+                  <p className="text-xs text-muted-foreground">{label}</p>
                 </div>
               </div>
-              <p className="text-white font-medium text-center">
-                Connected to Agent
-              </p>
 
-              <div className="w-full">
-                <VoiceAssistantControlBar controls={{ leave: true }} />
-                <RoomAudioRenderer />
-                <TranscriptView agentKey={agentKey} />
+              <div className="flex items-center gap-2 shrink-0">
+                {(
+                  [
+                    {
+                      icon: MicOff,
+                      label: "Mute",
+                      title: "Not available for phone calls",
+                    },
+                    { icon: PauseCircle, label: "Hold", title: "Coming soon" },
+                  ] as const
+                ).map(({ icon: Icon, label: lbl, title }) => (
+                  <button
+                    key={lbl}
+                    disabled
+                    title={title}
+                    className="flex flex-col items-center gap-1 p-2.5 rounded-xl bg-card border border-border text-muted-foreground opacity-40 cursor-not-allowed"
+                  >
+                    <Icon className="size-4" />
+                    <span className="text-[10px]">{lbl}</span>
+                  </button>
+                ))}
+                <button
+                  onClick={() => setShowEndConfirm(true)}
+                  disabled={!isActive}
+                  className="flex flex-col items-center gap-1 p-2.5 rounded-xl bg-destructive/10 border border-destructive/30 text-destructive hover:bg-destructive/20 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                >
+                  <PhoneOff className="size-4" />
+                  <span className="text-[10px] font-medium">End</span>
+                </button>
+                <button
+                  disabled
+                  title="Human handoff coming soon"
+                  className="flex flex-col items-center gap-1 p-2.5 rounded-xl bg-card border border-border text-muted-foreground opacity-40 cursor-not-allowed"
+                >
+                  <UserPlus className="size-4" />
+                  <span className="text-[10px]">Take over</span>
+                </button>
               </div>
             </div>
-          </LiveKitRoom>
-        )}
-      </div>
-    </div>
+          </div>
+
+          {/* ── Transcript (~75%) ── */}
+          <div className="flex-1 min-h-0 relative flex flex-col">
+            {!showTranscript ? (
+              <DialProgress status={status} toNumber={toNumber} />
+            ) : (
+              <>
+                {/* Desktop column headers — hidden on mobile */}
+                <div className="hidden sm:grid grid-cols-2 border-b border-border shrink-0">
+                  <div className="px-5 py-2 border-r border-border">
+                    <span className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                      Original
+                    </span>
+                  </div>
+                  <div className="px-5 py-2 flex items-center justify-between">
+                    <span className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                      Translation
+                    </span>
+                    <select className="text-xs border border-border rounded-md px-1.5 py-0.5 bg-card text-foreground focus:outline-none">
+                      {TRANSLATE_LANGS.map((l) => (
+                        <option
+                          key={l.code}
+                          value={l.code}
+                          disabled={l.disabled}
+                        >
+                          {l.label}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+
+                {/* Mobile tab toggle — hidden on desktop */}
+                <div className="sm:hidden flex border-b border-border shrink-0">
+                  {(["original", "translation"] as const).map((tab) => (
+                    <button
+                      key={tab}
+                      onClick={() => setMobileTxTab(tab)}
+                      className={`flex-1 py-2.5 text-xs font-semibold uppercase tracking-wide transition-colors ${
+                        mobileTxTab === tab
+                          ? "text-primary border-b-2 border-primary -mb-px"
+                          : "text-muted-foreground"
+                      }`}
+                    >
+                      {tab === "original" ? "Original" : "Translation"}
+                    </button>
+                  ))}
+                </div>
+
+                {/* Scrollable body */}
+                <div
+                  ref={scrollRef}
+                  onScroll={handleScroll}
+                  className="flex-1 overflow-y-auto"
+                >
+                  {transcript.length === 0 ? (
+                    <div className="flex flex-col items-center justify-center h-full gap-3 py-16">
+                      <div className="size-6 border-2 border-border border-t-primary rounded-full animate-spin" />
+                      <p className="text-xs text-muted-foreground">
+                        Waiting for conversation to start…
+                      </p>
+                    </div>
+                  ) : (
+                    <>
+                      {/* Desktop: two-column grid */}
+                      <div className="hidden sm:grid grid-cols-2 min-h-full">
+                        {/* Original column */}
+                        <div className="border-r border-border px-5 py-4 space-y-4">
+                          {transcript.map((line) => {
+                            const isAgent = line.speaker === "Agent";
+                            return (
+                              <div
+                                key={line.id}
+                                className="flex flex-col gap-1"
+                              >
+                                <div className="flex items-center gap-2">
+                                  <span
+                                    className={`text-[10px] font-semibold uppercase tracking-wide ${isAgent ? "text-primary" : "text-success"}`}
+                                  >
+                                    {line.speaker}
+                                  </span>
+                                  <span className="text-[10px] text-muted-foreground tabular-nums">
+                                    {new Date(
+                                      line.timestamp,
+                                    ).toLocaleTimeString([], {
+                                      hour: "2-digit",
+                                      minute: "2-digit",
+                                      second: "2-digit",
+                                    })}
+                                  </span>
+                                  {!line.isFinal && (
+                                    <span className="text-[10px] text-muted-foreground/50 italic">
+                                      …
+                                    </span>
+                                  )}
+                                </div>
+                                <div
+                                  className={`px-3 py-2 rounded-xl text-xs leading-relaxed ${isAgent ? "bg-accent border border-primary/10 text-accent-foreground" : "bg-secondary border border-border text-secondary-foreground"}`}
+                                >
+                                  {line.text || (
+                                    <span className="italic text-muted-foreground/50">
+                                      Transcribing…
+                                    </span>
+                                  )}
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                        {/* Translation column */}
+                        <div className="px-5 py-4 space-y-4">
+                          {transcript.map((line) => {
+                            const isAgent = line.speaker === "Agent";
+                            const showTranslation =
+                              agentKey === "restaurant-es" &&
+                              line.isFinal &&
+                              line.text.length > 2;
+                            return (
+                              <div
+                                key={line.id}
+                                className="flex flex-col gap-1"
+                              >
+                                <div className="h-[18px]" />
+                                <div
+                                  className={`px-3 py-2 rounded-xl text-xs leading-relaxed ${isAgent ? "bg-accent/50 border border-primary/5 text-accent-foreground" : "bg-secondary/50 border border-border/50 text-secondary-foreground"}`}
+                                >
+                                  {showTranslation ? (
+                                    line.translation === "" ? (
+                                      <span className="italic text-muted-foreground/50">
+                                        (already in English)
+                                      </span>
+                                    ) : (
+                                      (line.translation ?? (
+                                        <span className="italic text-muted-foreground/50">
+                                          Translating…
+                                        </span>
+                                      ))
+                                    )
+                                  ) : (
+                                    <span className="italic text-muted-foreground/40 text-[11px]">
+                                      {agentKey === "restaurant-es"
+                                        ? "Translation pending…"
+                                        : "No translation needed"}
+                                    </span>
+                                  )}
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+
+                      {/* Mobile: single column */}
+                      <div className="sm:hidden px-4 py-4 space-y-4">
+                        {transcript.map((line) => {
+                          const isAgent = line.speaker === "Agent";
+                          const showTranslation =
+                            agentKey === "restaurant-es" &&
+                            line.isFinal &&
+                            line.text.length > 2;
+                          const content =
+                            mobileTxTab === "original" ? (
+                              line.text || (
+                                <span className="italic text-muted-foreground/50">
+                                  Transcribing…
+                                </span>
+                              )
+                            ) : showTranslation ? (
+                              line.translation === "" ? (
+                                <span className="italic text-muted-foreground/50">
+                                  (already in English)
+                                </span>
+                              ) : (
+                                (line.translation ?? (
+                                  <span className="italic text-muted-foreground/50">
+                                    Translating…
+                                  </span>
+                                ))
+                              )
+                            ) : (
+                              <span className="italic text-muted-foreground/40 text-[11px]">
+                                {agentKey === "restaurant-es"
+                                  ? "Translation pending…"
+                                  : "No translation needed"}
+                              </span>
+                            );
+                          return (
+                            <div key={line.id} className="flex flex-col gap-1">
+                              <div className="flex items-center gap-2">
+                                <span
+                                  className={`text-[10px] font-semibold uppercase tracking-wide ${isAgent ? "text-primary" : "text-success"}`}
+                                >
+                                  {line.speaker}
+                                </span>
+                                <span className="text-[10px] text-muted-foreground tabular-nums">
+                                  {new Date(line.timestamp).toLocaleTimeString(
+                                    [],
+                                    {
+                                      hour: "2-digit",
+                                      minute: "2-digit",
+                                      second: "2-digit",
+                                    },
+                                  )}
+                                </span>
+                                {!line.isFinal && (
+                                  <span className="text-[10px] text-muted-foreground/50 italic">
+                                    …
+                                  </span>
+                                )}
+                              </div>
+                              <div
+                                className={`px-3 py-2.5 rounded-xl text-xs leading-relaxed ${isAgent ? "bg-accent border border-primary/10 text-accent-foreground" : "bg-secondary border border-border text-secondary-foreground"}`}
+                              >
+                                {content}
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </>
+                  )}
+                </div>
+
+                {/* Jump to latest */}
+                {showJumpToLatest && (
+                  <button
+                    onClick={() => {
+                      scrollRef.current?.scrollTo({
+                        top: scrollRef.current.scrollHeight,
+                        behavior: "smooth",
+                      });
+                      setShowJumpToLatest(false);
+                    }}
+                    className="absolute bottom-4 left-1/2 -translate-x-1/2 flex items-center gap-1.5 px-3 py-1.5 bg-primary text-primary-foreground rounded-full text-xs font-medium shadow-lg z-10 hover:bg-primary/90 transition-colors animate-in slide-in-from-bottom-2 duration-150"
+                  >
+                    <ChevronDown className="size-3" />
+                    Jump to latest
+                  </button>
+                )}
+              </>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Dummy DialogContent to satisfy portal structure */}
+      <DialogContent className="hidden" />
+    </Dialog>
   );
 }

@@ -8,7 +8,7 @@ import {
   log,
   inference,
 } from "@livekit/agents";
-import * as cartesia from "@livekit/agents-plugin-cartesia";
+import * as elevenlabs from "@livekit/agents-plugin-elevenlabs";
 import * as deepgram from "@livekit/agents-plugin-deepgram";
 import * as google from "@livekit/agents-plugin-google";
 
@@ -50,10 +50,10 @@ export default defineAgent({
           model: LLM_MODEL,
           apiKey: process.env.GEMINI_API_KEY,
         }),
-        tts: new cartesia.TTS({
-          apiKey: process.env.CARTESIA_API_KEY,
+        tts: new elevenlabs.TTS({
+          apiKey: process.env.ELEVENLABS_API_KEY,
           model: TTS_MODEL,
-          voice: TTS_VOICE_ID,
+          voiceId: TTS_VOICE_ID,
         }),
       });
 

@@ -1,9 +1,13 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { Maximize2, Minimize2 } from "lucide-react";
+import { Maximize2, Minimize2, Wand2 } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { Skeleton } from "@/components/ui/skeleton";
+import { Textarea } from "@/components/ui/textarea";
+import { useToast } from "@/components/ui/toast";
 
-interface AIJobDescriptionTabProps {
+interface InstructionsTabProps {
   agentKey: string;
 }
 
@@ -14,14 +18,38 @@ interface PromptSections {
   additionalInstructions: string;
 }
 
-const SECTION_TITLES = {
-  roleAndResponsibilities: "Role and Responsibilities",
-  personaLanguageAndTone: "Persona Language and Tone",
-  mistakesToAvoid: "Mistakes to Avoid",
-  additionalInstructions: "Additional Instructions",
-} as const;
+const SECTION_META: Record<
+  keyof PromptSections,
+  { title: string; helper: string; placeholder: string }
+> = {
+  roleAndResponsibilities: {
+    title: "What it does",
+    helper: "Describe the agent's main job and the outcome you expect.",
+    placeholder:
+      "e.g. Answer inbound calls from customers looking to book an appointment. Collect their name, preferred date and time, and confirm the booking.",
+  },
+  personaLanguageAndTone: {
+    title: "How it talks",
+    helper:
+      "Set the tone — friendly, professional, concise. Include phrases to always use or avoid.",
+    placeholder:
+      "e.g. Speak in a warm, professional tone. Use short sentences. Always address the caller by their first name.",
+  },
+  mistakesToAvoid: {
+    title: "What to avoid",
+    helper: "List specific behaviors, topics, or phrases it should never do.",
+    placeholder:
+      "e.g. Never mention competitor names. Do not promise same-day availability without checking first.",
+  },
+  additionalInstructions: {
+    title: "Anything else",
+    helper: "Any extra rules or context that didn't fit above.",
+    placeholder: "Add any extra rules or context for your agent.",
+  },
+};
 
-export function AIJobDescriptionTab({ agentKey }: AIJobDescriptionTabProps) {
+export function InstructionsTab({ agentKey }: InstructionsTabProps) {
+  const { toast } = useToast();
   const [sections, setSections] = useState<PromptSections>({
     roleAndResponsibilities: "",
     personaLanguageAndTone: "",
@@ -30,6 +58,7 @@ export function AIJobDescriptionTab({ agentKey }: AIJobDescriptionTabProps) {
   });
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [savedOk, setSavedOk] = useState(false);
   const [expandedSection, setExpandedSection] = useState<
     keyof PromptSections | null
   >(null);
@@ -42,7 +71,12 @@ export function AIJobDescriptionTab({ agentKey }: AIJobDescriptionTabProps) {
         if (!response.ok) throw new Error("Failed to fetch prompt");
         const data = await response.json();
         if (isMounted) {
-          setSections(data);
+          setSections({
+            roleAndResponsibilities: data.roleAndResponsibilities ?? "",
+            personaLanguageAndTone: data.personaLanguageAndTone ?? "",
+            mistakesToAvoid: data.mistakesToAvoid ?? "",
+            additionalInstructions: data.additionalInstructions ?? "",
+          });
           setLoading(false);
         }
       } catch (error) {
@@ -61,26 +95,40 @@ export function AIJobDescriptionTab({ agentKey }: AIJobDescriptionTabProps) {
     try {
       const response = await fetch(`/api/agents/${agentKey}/prompt`, {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify(sections),
       });
       if (!response.ok) throw new Error("Failed to save prompt");
-      alert("Prompt saved successfully!");
+      setSavedOk(true);
+      setTimeout(() => setSavedOk(false), 2500);
     } catch (error) {
       console.error(error);
-      alert("Failed to save prompt.");
+      toast({
+        message:
+          "Couldn't save your instructions — check your connection and try again.",
+        variant: "error",
+      });
     } finally {
       setSaving(false);
     }
   };
 
+  const handleImproveWithAI = () => {
+    toast({
+      message: "AI suggestions are on the way — we'll let you know.",
+      variant: "info",
+    });
+  };
+
   if (loading) {
     return (
-      <div className="flex flex-col gap-6 animate-pulse">
+      <div className="flex flex-col gap-6">
         {[1, 2, 3, 4].map((i) => (
-          <div key={i} className="bg-neutral-800 h-40 rounded-lg" />
+          <div key={i} className="flex flex-col gap-2">
+            <Skeleton className="h-4 w-32" />
+            <Skeleton className="h-3 w-56" />
+            <Skeleton className="h-[120px] w-full" />
+          </div>
         ))}
       </div>
     );
@@ -88,54 +136,72 @@ export function AIJobDescriptionTab({ agentKey }: AIJobDescriptionTabProps) {
 
   return (
     <div className="flex flex-col gap-6 text-left">
-      <div className="flex flex-col items-start gap-2">
-        <button
+      <div className="flex items-center justify-between">
+        <p className="text-xs text-muted-foreground">
+          Changes are live in a few seconds.
+        </p>
+        <Button
           onClick={handleSave}
           disabled={saving}
-          className="px-6 py-2 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed rounded-lg font-semibold text-white transition-colors"
+          size="sm"
+          variant={savedOk ? "secondary" : "default"}
         >
-          {saving ? "Saving..." : "Save Changes"}
-        </button>
-        <span className="text-sm text-neutral-400">
-          Changes take effect after restarting the agent.
-        </span>
+          {saving ? "Saving…" : savedOk ? "Saved ✓" : "Save"}
+        </Button>
       </div>
 
-      <div className="flex flex-col divide-y divide-neutral-700">
-        {(Object.keys(SECTION_TITLES) as Array<keyof PromptSections>).map(
+      <div className="flex flex-col divide-y divide-border">
+        {(Object.keys(SECTION_META) as Array<keyof PromptSections>).map(
           (key) => {
+            const meta = SECTION_META[key];
             const isExpanded = expandedSection === key;
-
             if (expandedSection && !isExpanded) return null;
 
             return (
               <div
                 key={key}
-                className="py-6 first:pt-0 last:pb-0 flex flex-col gap-3"
+                className="py-5 first:pt-0 last:pb-0 flex flex-col gap-2.5"
               >
-                <div className="flex items-center justify-between">
-                  <h3 className="text-lg font-semibold text-white">
-                    {SECTION_TITLES[key]}
-                  </h3>
-                  <button
-                    onClick={() => setExpandedSection(isExpanded ? null : key)}
-                    className="p-1.5 text-neutral-400 hover:text-white hover:bg-neutral-700 rounded-md transition-colors"
-                    title={isExpanded ? "Collapse" : "Expand"}
-                  >
-                    {isExpanded ? (
-                      <Minimize2 size={18} />
-                    ) : (
-                      <Maximize2 size={18} />
-                    )}
-                  </button>
+                <div className="flex items-start justify-between gap-2">
+                  <div className="flex flex-col gap-0.5">
+                    <label className="text-sm font-medium text-foreground">
+                      {meta.title}
+                    </label>
+                    <p className="text-xs text-muted-foreground">
+                      {meta.helper}
+                    </p>
+                  </div>
+                  <div className="flex items-center gap-1 shrink-0 mt-0.5">
+                    <button
+                      onClick={handleImproveWithAI}
+                      className="flex items-center gap-1.5 px-2 py-1 text-xs text-muted-foreground hover:text-primary hover:bg-primary/5 rounded-md transition-colors"
+                    >
+                      <Wand2 className="size-3.5" />
+                      Improve with AI
+                    </button>
+                    <button
+                      onClick={() =>
+                        setExpandedSection(isExpanded ? null : key)
+                      }
+                      className="p-1 text-muted-foreground hover:text-foreground hover:bg-muted rounded-md transition-colors"
+                      aria-label={isExpanded ? "Collapse" : "Expand"}
+                    >
+                      {isExpanded ? (
+                        <Minimize2 size={15} />
+                      ) : (
+                        <Maximize2 size={15} />
+                      )}
+                    </button>
+                  </div>
                 </div>
-                <textarea
+                <Textarea
                   value={sections[key]}
                   onChange={(e) =>
                     setSections((prev) => ({ ...prev, [key]: e.target.value }))
                   }
-                  className="w-full bg-neutral-900 border border-neutral-700 rounded-lg p-4 text-neutral-200 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 transition-all font-mono text-sm resize-none"
-                  style={{ minHeight: isExpanded ? "400px" : "150px" }}
+                  className="font-mono text-xs leading-relaxed"
+                  placeholder={meta.placeholder}
+                  style={{ minHeight: isExpanded ? "360px" : "120px" }}
                   onInput={(e) => {
                     const target = e.target as HTMLTextAreaElement;
                     target.style.height = "auto";
