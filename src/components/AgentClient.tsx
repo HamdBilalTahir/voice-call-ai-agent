@@ -1,208 +1,479 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, useRef, useCallback } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
-import { AgentConfig } from "@/lib/agents/registry";
+import { type AgentFullData } from "@/lib/firebase/agents";
 import Link from "next/link";
+import {
+  ArrowLeft,
+  Phone,
+  PhoneIncoming,
+  PhoneOutgoing,
+  MoreHorizontal,
+  Sparkles,
+  Pencil,
+  AlertTriangle,
+} from "lucide-react";
 import { Switch } from "@/components/ui/switch";
-import { TestCallPanel } from "./TestCallPanel";
+import { Badge } from "@/components/ui/badge";
+import { Card } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
+import { EmptyState } from "@/components/ui/empty-state";
+import { Separator } from "@/components/ui/separator";
+import {
+  Dialog,
+  DialogClose,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { useToast } from "@/components/ui/toast";
+import { InstructionsTab } from "./AIJobDescriptionTab";
+import { VoiceBehaviorTab } from "./VoiceBehaviorTab";
 
 interface AgentClientProps {
-  agent: AgentConfig;
+  agentData: AgentFullData;
   agentKey: string;
 }
 
-const TABS = [
-  { id: "job-description", label: "AI Job Description" },
-  { id: "knowledge-base", label: "Knowledge Base" },
-  { id: "agent-settings", label: "Agent Settings" },
-  { id: "actions", label: "Actions" },
-  { id: "connect", label: "Connect" },
-] as const;
+function relativeTime(ts: number): string {
+  const diff = Date.now() - ts;
+  const min = Math.floor(diff / 60_000);
+  if (min < 1) return "just now";
+  if (min < 60) return `${min}m ago`;
+  const hours = Math.floor(min / 60);
+  if (hours < 24) return `${hours}h ago`;
+  return `${Math.floor(hours / 24)}d ago`;
+}
 
-import { AIJobDescriptionTab } from "./AIJobDescriptionTab";
+function KebabMenu({ onAction }: { onAction: (action: string) => void }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
 
-function TabContent({ tab, agentKey }: { tab: string; agentKey: string }) {
+  useEffect(() => {
+    if (!open) return;
+    const handler = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node))
+        setOpen(false);
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [open]);
+
   return (
-    <div className="bg-neutral-800 border border-neutral-700 rounded-xl p-10 text-center">
-      {tab === "job-description" ? (
-        <AIJobDescriptionTab agentKey={agentKey} />
-      ) : (
-        <p className="text-neutral-500 text-base">Coming soon.</p>
+    <div ref={ref} className="relative">
+      <button
+        onClick={() => setOpen((v) => !v)}
+        className="p-1.5 text-muted-foreground hover:text-foreground hover:bg-muted rounded-lg transition-colors"
+        aria-label="More options"
+      >
+        <MoreHorizontal className="size-4" />
+      </button>
+      {open && (
+        <div className="absolute right-0 top-9 w-44 bg-card border border-border rounded-xl shadow-lg z-20 py-1 overflow-hidden">
+          {["Duplicate", "Export config", "View logs"].map((action) => (
+            <button
+              key={action}
+              onClick={() => {
+                onAction(action);
+                setOpen(false);
+              }}
+              className="w-full text-left px-3.5 py-2 text-sm text-foreground hover:bg-muted transition-colors"
+            >
+              {action}
+            </button>
+          ))}
+          <div className="my-1 border-t border-border" />
+          <button
+            onClick={() => {
+              onAction("Delete");
+              setOpen(false);
+            }}
+            className="w-full text-left px-3.5 py-2 text-sm text-destructive hover:bg-destructive/5 transition-colors"
+          >
+            Delete agent
+          </button>
+        </div>
       )}
     </div>
   );
 }
 
-export function AgentClient({ agent, agentKey }: AgentClientProps) {
+function RecentActivityPanel({
+  activeCalls,
+  callHistory,
+  now,
+}: {
+  activeCalls: any[];
+  callHistory: any[];
+  now: number;
+}) {
+  const isEmpty = activeCalls.length === 0 && callHistory.length === 0;
+
+  return (
+    <Card className="overflow-hidden">
+      <div className="px-4 py-3.5 border-b border-border flex items-center justify-between">
+        <h2 className="text-xs font-semibold text-foreground uppercase tracking-wide">
+          Recent activity
+        </h2>
+        {activeCalls.length > 0 && (
+          <Badge variant="success">
+            <span className="w-1.5 h-1.5 rounded-full bg-success animate-pulse" />
+            {activeCalls.length} live
+          </Badge>
+        )}
+      </div>
+
+      {isEmpty ? (
+        <EmptyState
+          icon={<Phone className="size-5" />}
+          title="No activity yet"
+          description="Calls will appear here once they start."
+        />
+      ) : (
+        <div className="divide-y divide-border">
+          {activeCalls.map((room) => {
+            const duration = Math.floor(
+              (now - room.creationTime * 1000) / 1000,
+            );
+            const mins = Math.floor(duration / 60);
+            const secs = duration % 60;
+            return (
+              <div
+                key={room.name}
+                className="flex items-center justify-between px-4 py-3"
+              >
+                <div>
+                  <p className="text-xs font-medium text-foreground">
+                    Active call
+                  </p>
+                  <p className="text-xs text-muted-foreground mt-0.5">
+                    {mins}:{secs.toString().padStart(2, "0")} &middot;{" "}
+                    {room.numParticipants} participants
+                  </p>
+                </div>
+                <Link href={`/calls/${room.name}`}>
+                  <button className="px-2.5 py-1 text-xs font-medium bg-secondary text-secondary-foreground hover:bg-secondary/80 rounded-lg transition-colors">
+                    Watch
+                  </button>
+                </Link>
+              </div>
+            );
+          })}
+
+          {callHistory.slice(0, 8).map((record) => (
+            <div
+              key={record.id}
+              className="flex items-center justify-between px-4 py-3"
+            >
+              <div className="min-w-0">
+                <p className="text-xs font-medium text-foreground truncate">
+                  {record.phoneNumber || "—"}
+                </p>
+                <p className="text-xs text-muted-foreground mt-0.5">
+                  {relativeTime(record.startTime)}
+                  {record.duration ? ` · ${record.duration}s` : ""}
+                </p>
+              </div>
+              <Badge
+                variant={
+                  record.status === "completed"
+                    ? "success"
+                    : record.status === "missed"
+                      ? "destructive"
+                      : "default"
+                }
+                className="capitalize shrink-0 ml-3"
+              >
+                {record.status}
+              </Badge>
+            </div>
+          ))}
+        </div>
+      )}
+    </Card>
+  );
+}
+
+const TABS = [
+  { id: "job-description", label: "Instructions" },
+  { id: "agent-settings", label: "Voice & Behavior" },
+  { id: "knowledge-base", label: "Knowledge" },
+  { id: "actions", label: "Tools & Actions" },
+  { id: "connect", label: "Phone & Channels" },
+] as const;
+
+function ReadOnlyTab({ title }: { title: string }) {
+  return (
+    <div className="bg-card border border-border rounded-xl px-6 py-10 text-center">
+      <p className="text-sm font-medium text-foreground mb-1">{title}</p>
+      <p className="text-xs text-muted-foreground">
+        Managed by admin — editing coming soon.
+      </p>
+    </div>
+  );
+}
+
+function TabContent({
+  tab,
+  agentKey,
+  agentData,
+  onVoiceEnabledChange,
+}: {
+  tab: string;
+  agentKey: string;
+  agentData: AgentFullData;
+  onVoiceEnabledChange: (enabled: boolean) => void;
+}) {
+  if (tab === "job-description") {
+    return <InstructionsTab agentKey={agentKey} initialData={agentData} />;
+  }
+  if (tab === "agent-settings") {
+    return (
+      <VoiceBehaviorTab
+        agentKey={agentKey}
+        initialData={agentData}
+        onVoiceEnabledChange={onVoiceEnabledChange}
+      />
+    );
+  }
+  if (tab === "knowledge-base") return <ReadOnlyTab title="Knowledge base" />;
+  if (tab === "actions") return <ReadOnlyTab title="Tools & Actions" />;
+  if (tab === "connect") return <ReadOnlyTab title="Phone & Channels" />;
+  return null;
+}
+
+export function AgentClient({ agentData, agentKey }: AgentClientProps) {
   const searchParams = useSearchParams();
   const router = useRouter();
+  const { toast } = useToast();
 
   const [activeCalls, setActiveCalls] = useState<any[]>([]);
   const [callHistory, setCallHistory] = useState<any[]>([]);
-  const [isAgentRunning, setIsAgentRunning] = useState(false);
-  const [isStartingAgent, setIsStartingAgent] = useState(false);
+  const [voiceEnabled, setVoiceEnabled] = useState(agentData.voiceEnabled);
+  const [isTogglingLive, setIsTogglingLive] = useState(false);
   const [now, setNow] = useState(() => Date.now());
+  const [isEditingName, setIsEditingName] = useState(false);
+  const [editedName, setEditedName] = useState(agentData.name);
+  const [showGoLiveModal, setShowGoLiveModal] = useState(false);
+  const nameInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     const id = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(id);
   }, []);
 
+  useEffect(() => {
+    if (isEditingName) nameInputRef.current?.focus();
+  }, [isEditingName]);
+
   const activeTab = searchParams.get("tab") ?? "job-description";
 
   const setTab = (tab: string) => {
-    const params = new URLSearchParams(searchParams.toString());
-    params.set("tab", tab);
-    router.push(`?${params.toString()}`);
+    const p = new URLSearchParams(searchParams.toString());
+    p.set("tab", tab);
+    router.push(`?${p.toString()}`);
   };
 
   useEffect(() => {
-    if (!agent) return;
-
-    let isMounted = true;
-    let timeoutId: NodeJS.Timeout;
-
-    const fetchAllData = async () => {
-      if (!isMounted) return;
-
+    let mounted = true;
+    let tid: NodeJS.Timeout;
+    const poll = async () => {
+      if (!mounted) return;
       try {
-        const [activeRes, historyRes, statusRes] = await Promise.all([
+        const [activeRes, historyRes] = await Promise.all([
           fetch(`/api/rooms/active?agent=${agentKey}`),
           fetch(`/api/history?agent=${agentKey}`),
-          fetch(`/api/agents/process?agentKey=${agentKey}`),
         ]);
-
-        if (isMounted) {
+        if (mounted) {
           if (activeRes.ok) setActiveCalls(await activeRes.json());
           if (historyRes.ok) setCallHistory(await historyRes.json());
-          if (statusRes.ok)
-            setIsAgentRunning((await statusRes.json()).isRunning);
         }
-      } catch (error) {
-        if (isMounted) console.error("Error fetching agent data:", error);
+      } catch {
+        // non-critical polling error
       }
-
-      if (isMounted) {
-        timeoutId = setTimeout(fetchAllData, 3000);
-      }
+      if (mounted) tid = setTimeout(poll, 5000);
     };
-
-    fetchAllData();
-
+    poll();
     return () => {
-      isMounted = false;
-      clearTimeout(timeoutId);
+      mounted = false;
+      clearTimeout(tid);
     };
-  }, [agentKey, agent]);
+  }, [agentKey]);
 
-  const toggleAgent = async () => {
-    setIsStartingAgent(true);
-    try {
-      const action = isAgentRunning ? "stop" : "start";
-      const res = await fetch("/api/agents/process", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ agentKey, action }),
-      });
-      if (res.ok) setIsAgentRunning((await res.json()).isRunning);
-      else throw new Error("Failed to toggle agent");
-    } catch (e) {
-      console.error(e);
-      alert("Error toggling agent");
-    } finally {
-      setIsStartingAgent(false);
-    }
+  const toggleLive = useCallback(
+    async (newValue: boolean) => {
+      setVoiceEnabled(newValue);
+      setIsTogglingLive(true);
+      try {
+        const res = await fetch(`/api/agents/${agentKey}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            payload: { voiceEnabled: newValue },
+            updatedBy: "system",
+            updatedByName: "App User",
+          }),
+        });
+        if (!res.ok) throw new Error("Failed");
+      } catch {
+        setVoiceEnabled(!newValue);
+        toast({
+          message:
+            "Couldn't update live status — check your connection and try again.",
+          variant: "error",
+        });
+      } finally {
+        setIsTogglingLive(false);
+      }
+    },
+    [agentKey, toast],
+  );
+
+  const handleKebabAction = (action: string) => {
+    toast({
+      message: `${action} is coming soon — we're working on it.`,
+      variant: "info",
+    });
   };
 
+  const lastEditedLabel = agentData.updatedAt
+    ? `Last edited ${relativeTime(agentData.updatedAt)}${agentData.updatedByName ? ` by ${agentData.updatedByName}` : ""}`
+    : null;
+
   return (
-    <div className="flex flex-col gap-8">
-      {/* Back button */}
+    <div className="flex flex-col gap-6">
       <div>
         <Link
           href="/"
-          className="inline-flex items-center gap-2 text-base text-neutral-400 hover:text-white transition-colors"
+          className="inline-flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground transition-colors"
         >
-          <svg
-            className="w-5 h-5"
-            fill="none"
-            viewBox="0 0 24 24"
-            stroke="currentColor"
-          >
-            <path
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              strokeWidth={2}
-              d="M15 19l-7-7 7-7"
-            />
-          </svg>
-          Back
+          <ArrowLeft className="size-4" />
+          All agents
         </Link>
       </div>
 
-      {/* Two-column layout */}
-      <div className="grid grid-cols-[1fr_420px] gap-8 items-start">
-        {/* Left column */}
-        <div className="min-w-0 space-y-8">
-          {/* Page header */}
-          <div className="flex items-center justify-between gap-4">
-            <div>
-              <h1 className="text-4xl font-bold text-white">{agent.name}</h1>
-              <div className="flex items-center gap-3 mt-3 flex-wrap">
-                <span className="text-base text-neutral-500">
-                  ID:{" "}
-                  <span className="text-neutral-400 font-mono">{agentKey}</span>
-                </span>
-                <span className="capitalize px-3 py-1 bg-neutral-800 rounded-md text-neutral-300 text-sm font-medium border border-neutral-700">
-                  {agent.direction}
-                </span>
-                <div
-                  className={`flex items-center gap-2 px-3 py-1 rounded-full text-sm font-medium ${
-                    isAgentRunning
-                      ? "bg-green-900/30 text-green-400 border border-green-800/50"
-                      : "bg-neutral-800 text-neutral-400 border border-neutral-700"
-                  }`}
-                >
-                  <div
-                    className={`w-2 h-2 rounded-full ${
-                      isAgentRunning
-                        ? "bg-green-500 animate-pulse"
-                        : "bg-neutral-500"
-                    }`}
-                  />
-                  {isAgentRunning ? "Running" : "Stopped"}
-                </div>
-              </div>
-            </div>
-            <div className="flex items-center gap-3 shrink-0">
-              <span className="text-sm font-medium text-neutral-400">
-                {isStartingAgent
-                  ? "Working..."
-                  : isAgentRunning
-                    ? "Active"
-                    : "Inactive"}
-              </span>
-              <Switch
-                checked={isAgentRunning}
-                onCheckedChange={toggleAgent}
-                disabled={isStartingAgent}
-                className="data-checked:bg-green-500 data-unchecked:bg-neutral-600"
+      {voiceEnabled && (
+        <div className="flex items-center gap-2 px-4 py-2.5 bg-amber-50 border border-amber-200 rounded-xl text-sm text-amber-800">
+          <AlertTriangle className="size-4 shrink-0 text-amber-500" />
+          This agent is live. Changes apply to the next call, not calls already
+          in progress.
+        </div>
+      )}
+
+      <div className="bg-card border border-border rounded-xl px-6 py-5">
+        <div className="flex items-start justify-between gap-4">
+          <div className="min-w-0">
+            {isEditingName ? (
+              <input
+                ref={nameInputRef}
+                value={editedName}
+                onChange={(e) => setEditedName(e.target.value)}
+                onBlur={() => setIsEditingName(false)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" || e.key === "Escape")
+                    setIsEditingName(false);
+                }}
+                className="text-[26px] font-semibold text-foreground tracking-tight bg-transparent border-b-2 border-primary outline-none w-full pb-0.5"
               />
+            ) : (
+              <button
+                onClick={() => setIsEditingName(true)}
+                className="group flex items-center gap-2 text-left"
+              >
+                <h1 className="text-[26px] font-semibold text-foreground tracking-tight">
+                  {editedName}
+                </h1>
+                <Pencil className="size-4 text-muted-foreground opacity-0 group-hover:opacity-100 transition-opacity shrink-0" />
+              </button>
+            )}
+            <p className="text-sm text-muted-foreground mt-1">
+              {agentData.description}
+            </p>
+            <div className="flex items-center gap-2 mt-3 flex-wrap">
+              <Badge variant="secondary" className="gap-1.5">
+                {agentData.direction === "inbound" ? (
+                  <>
+                    <PhoneIncoming className="size-3" />
+                    Answers calls
+                  </>
+                ) : (
+                  <>
+                    <PhoneOutgoing className="size-3" />
+                    Makes calls
+                  </>
+                )}
+              </Badge>
+              <Badge variant={voiceEnabled ? "success" : "secondary"}>
+                <span
+                  className={`w-1.5 h-1.5 rounded-full ${
+                    voiceEnabled
+                      ? "bg-success animate-pulse"
+                      : "bg-muted-foreground"
+                  }`}
+                />
+                {voiceEnabled ? "Live" : "Paused"}
+              </Badge>
+              {lastEditedLabel && (
+                <span className="text-xs text-muted-foreground">
+                  {lastEditedLabel}
+                </span>
+              )}
             </div>
           </div>
 
-          {/* Tab navigation */}
-          <div className="border-b border-neutral-700">
-            <nav className="flex gap-1 -mb-px">
+          <div className="flex items-center gap-2 shrink-0 mt-1">
+            <Link
+              href={`/playground?agent=${agentKey}`}
+              className="inline-flex items-center gap-1.5 h-8 px-3 text-sm font-medium border border-border bg-white text-foreground hover:bg-muted rounded-lg transition-colors"
+            >
+              <Sparkles className="size-3.5" />
+              Try it out
+            </Link>
+
+            <Separator orientation="vertical" className="h-6 mx-1" />
+
+            <div className="flex items-center gap-2">
+              <span className="text-sm text-muted-foreground">
+                {isTogglingLive
+                  ? "Updating…"
+                  : voiceEnabled
+                    ? "Live"
+                    : "Paused"}
+              </span>
+              <Switch
+                checked={voiceEnabled}
+                onCheckedChange={(checked) => {
+                  if (checked) {
+                    setShowGoLiveModal(true);
+                  } else {
+                    void toggleLive(false);
+                  }
+                }}
+                disabled={isTogglingLive}
+              />
+            </div>
+
+            <KebabMenu onAction={handleKebabAction} />
+          </div>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-[1fr_360px] gap-8 items-start">
+        <div className="min-w-0">
+          <div className="border-b border-border">
+            <nav className="flex gap-0 -mb-px">
               {TABS.map((tab) => (
                 <button
                   key={tab.id}
                   onClick={() => setTab(tab.id)}
-                  className={`px-5 py-3 text-base font-medium border-b-2 transition-colors whitespace-nowrap ${
+                  className={`px-4 py-2.5 text-sm font-medium border-b-2 transition-colors whitespace-nowrap ${
                     activeTab === tab.id
-                      ? "border-blue-500 text-blue-400"
-                      : "border-transparent text-neutral-400 hover:text-neutral-200 hover:border-neutral-600"
+                      ? "border-primary text-primary"
+                      : "border-transparent text-muted-foreground hover:text-foreground hover:border-border"
                   }`}
                 >
                   {tab.label}
@@ -211,117 +482,54 @@ export function AgentClient({ agent, agentKey }: AgentClientProps) {
             </nav>
           </div>
 
-          {/* Tab content */}
-          <TabContent tab={activeTab} agentKey={agentKey} />
-
-          {/* Active Calls */}
-          <div className="bg-neutral-800 rounded-xl p-7 border border-neutral-700">
-            <h2 className="text-2xl font-bold text-white mb-5 flex items-center justify-between">
-              Active Calls
-              {activeCalls.length > 0 && (
-                <span className="text-sm font-normal px-3 py-1 bg-blue-600/20 text-blue-400 rounded-md">
-                  {activeCalls.length} live
-                </span>
-              )}
-            </h2>
-            {activeCalls.length === 0 ? (
-              <div className="text-center py-10 text-neutral-500 text-base">
-                No active calls
-              </div>
-            ) : (
-              <div className="space-y-3">
-                {activeCalls.map((room) => {
-                  const duration = Math.floor(
-                    (now - room.creationTime * 1000) / 1000,
-                  );
-                  const mins = Math.floor(duration / 60);
-                  const secs = duration % 60;
-                  return (
-                    <div
-                      key={room.name}
-                      className="flex items-center justify-between p-5 bg-neutral-900 rounded-lg border border-neutral-700"
-                    >
-                      <div className="flex flex-col gap-1">
-                        <span className="font-medium text-white text-base">
-                          {room.name}
-                        </span>
-                        <span className="text-sm text-neutral-400">
-                          {room.numParticipants} participants • Live: {mins}:
-                          {secs.toString().padStart(2, "0")}
-                        </span>
-                      </div>
-                      <Link href={`/calls/${room.name}`}>
-                        <button className="px-5 py-2.5 bg-neutral-700 hover:bg-neutral-600 rounded-lg text-base font-medium transition-colors">
-                          View Transcript
-                        </button>
-                      </Link>
-                    </div>
-                  );
-                })}
-              </div>
-            )}
-          </div>
-
-          {/* Call History */}
-          <div className="bg-neutral-800 rounded-xl p-7 border border-neutral-700">
-            <h2 className="text-2xl font-bold text-white mb-5">Call History</h2>
-            {callHistory.length === 0 ? (
-              <div className="text-center py-10 text-neutral-500 text-base">
-                No call history yet
-              </div>
-            ) : (
-              <div className="overflow-x-auto">
-                <table className="w-full text-left border-collapse">
-                  <thead>
-                    <tr className="border-b border-neutral-700 text-base text-neutral-400">
-                      <th className="py-4 font-medium">Phone Number</th>
-                      <th className="py-4 font-medium">Start Time</th>
-                      <th className="py-4 font-medium">Duration</th>
-                      <th className="py-4 font-medium">Status</th>
-                    </tr>
-                  </thead>
-                  <tbody className="text-base">
-                    {callHistory.map((record) => (
-                      <tr
-                        key={record.id}
-                        className="border-b border-neutral-700/50 last:border-0"
-                      >
-                        <td className="py-4 text-white font-medium">
-                          {record.phoneNumber}
-                        </td>
-                        <td className="py-4 text-neutral-400">
-                          {new Date(record.startTime).toLocaleString()}
-                        </td>
-                        <td className="py-4 text-neutral-400">
-                          {record.duration ? `${record.duration}s` : "-"}
-                        </td>
-                        <td className="py-4">
-                          <span
-                            className={`px-3 py-1 rounded-md text-sm font-medium ${
-                              record.status === "completed"
-                                ? "bg-green-900/30 text-green-400"
-                                : record.status === "missed"
-                                  ? "bg-red-900/30 text-red-400"
-                                  : "bg-blue-900/30 text-blue-400"
-                            }`}
-                          >
-                            {record.status}
-                          </span>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            )}
+          <div className="pt-6">
+            <TabContent
+              tab={activeTab}
+              agentKey={agentKey}
+              agentData={agentData}
+              onVoiceEnabledChange={setVoiceEnabled}
+            />
           </div>
         </div>
 
-        {/* Right sidebar — sticky */}
-        <div className="sticky top-24 mt-[148px]">
-          <TestCallPanel agent={agent} agentKey={agentKey} />
+        <div className="sticky top-24">
+          <RecentActivityPanel
+            activeCalls={activeCalls}
+            callHistory={callHistory}
+            now={now}
+          />
         </div>
       </div>
+
+      <Dialog open={showGoLiveModal} onClose={() => setShowGoLiveModal(false)}>
+        <DialogHeader>
+          <DialogTitle>Go live?</DialogTitle>
+          <DialogClose onClose={() => setShowGoLiveModal(false)} />
+        </DialogHeader>
+        <DialogContent>
+          <DialogDescription>
+            Your agent will start{" "}
+            {agentData.direction === "inbound"
+              ? "answering real incoming"
+              : "placing outgoing"}{" "}
+            calls right away. Give it a quick test first if you haven&apos;t
+            already.
+          </DialogDescription>
+        </DialogContent>
+        <DialogFooter>
+          <Button variant="outline" onClick={() => setShowGoLiveModal(false)}>
+            Cancel
+          </Button>
+          <Button
+            onClick={() => {
+              setShowGoLiveModal(false);
+              void toggleLive(true);
+            }}
+          >
+            Go live
+          </Button>
+        </DialogFooter>
+      </Dialog>
     </div>
   );
 }

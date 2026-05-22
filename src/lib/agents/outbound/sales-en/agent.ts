@@ -8,7 +8,7 @@ import {
   log,
   inference,
 } from "@livekit/agents";
-import * as cartesia from "@livekit/agents-plugin-cartesia";
+import * as elevenlabs from "@livekit/agents-plugin-elevenlabs";
 import * as deepgram from "@livekit/agents-plugin-deepgram";
 import * as google from "@livekit/agents-plugin-google";
 
@@ -35,6 +35,8 @@ function buildSTT() {
   }
 }
 
+const DEFAULT_GREETING = "Hey, is this Maha?";
+
 export default defineAgent({
   entry: async (ctx: JobContext) => {
     const logger = log();
@@ -44,16 +46,31 @@ export default defineAgent({
       await ctx.connect();
       logger.info("connected to room");
 
+      // Use dynamic instructions from dispatch metadata when available;
+      // fall back to the static prompt for backward compatibility.
+      let instructions = AGENT_SYSTEM_PROMPT;
+      let greeting = DEFAULT_GREETING;
+      try {
+        const meta = JSON.parse(ctx.job.metadata || "{}") as {
+          systemPrompt?: string;
+          voiceGreeting?: string;
+        };
+        if (meta.systemPrompt) instructions = meta.systemPrompt;
+        if (meta.voiceGreeting) greeting = meta.voiceGreeting;
+      } catch {
+        // malformed metadata — continue with static defaults
+      }
+
       const session = new voice.AgentSession({
         stt: buildSTT(),
         llm: new google.LLM({
           model: LLM_MODEL,
           apiKey: process.env.GEMINI_API_KEY,
         }),
-        tts: new cartesia.TTS({
-          apiKey: process.env.CARTESIA_API_KEY,
+        tts: new elevenlabs.TTS({
+          apiKey: process.env.ELEVENLABS_API_KEY,
           model: TTS_MODEL,
-          voice: TTS_VOICE_ID,
+          voiceId: TTS_VOICE_ID,
         }),
       });
 
@@ -80,13 +97,13 @@ export default defineAgent({
       logger.info("starting session");
       await session.start({
         agent: new voice.Agent({
-          instructions: AGENT_SYSTEM_PROMPT,
+          instructions,
         }),
         room: ctx.room,
       });
 
       logger.info("session started, sending greeting");
-      session.say("Hey, is this Maha?");
+      session.say(greeting);
     } catch (err) {
       logger.error({ err }, "fatal error in entry");
     }

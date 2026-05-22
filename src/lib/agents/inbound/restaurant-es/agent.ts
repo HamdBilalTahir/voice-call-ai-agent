@@ -8,7 +8,7 @@ import {
   log,
   inference,
 } from "@livekit/agents";
-import * as cartesia from "@livekit/agents-plugin-cartesia";
+import * as elevenlabs from "@livekit/agents-plugin-elevenlabs";
 import * as deepgram from "@livekit/agents-plugin-deepgram";
 import * as google from "@livekit/agents-plugin-google";
 
@@ -34,6 +34,9 @@ function buildSTT() {
   }
 }
 
+const DEFAULT_GREETING =
+  "Buenas tardes, gracias por llamar. ¿En qué le puedo ayudar?";
+
 export default defineAgent({
   entry: async (ctx: JobContext) => {
     const logger = log();
@@ -48,16 +51,31 @@ export default defineAgent({
       console.log("[restaurant-es] Connected, starting session...");
       logger.info("connected to room");
 
+      // Use dynamic instructions from dispatch metadata when available;
+      // fall back to the static prompt for backward compatibility.
+      let instructions = AGENT_SYSTEM_PROMPT;
+      let greeting = DEFAULT_GREETING;
+      try {
+        const meta = JSON.parse(ctx.job.metadata || "{}") as {
+          systemPrompt?: string;
+          voiceGreeting?: string;
+        };
+        if (meta.systemPrompt) instructions = meta.systemPrompt;
+        if (meta.voiceGreeting) greeting = meta.voiceGreeting;
+      } catch {
+        // malformed metadata — continue with static defaults
+      }
+
       const session = new voice.AgentSession({
         stt: buildSTT(),
         llm: new google.LLM({
           model: LLM_MODEL,
           apiKey: process.env.GEMINI_API_KEY,
         }),
-        tts: new cartesia.TTS({
-          apiKey: process.env.CARTESIA_API_KEY,
+        tts: new elevenlabs.TTS({
+          apiKey: process.env.ELEVENLABS_API_KEY,
           model: TTS_MODEL,
-          voice: TTS_VOICE_ID,
+          voiceId: TTS_VOICE_ID,
         }),
       });
 
@@ -84,17 +102,14 @@ export default defineAgent({
       logger.info("starting session");
       await session.start({
         agent: new voice.Agent({
-          instructions: AGENT_SYSTEM_PROMPT,
+          instructions,
         }),
         room: ctx.room,
       });
 
       console.log("[restaurant-es] Session started, saying greeting...");
       try {
-        await session.say(
-          "Buenas tardes, gracias por llamar. ¿En qué le puedo ayudar?",
-          { allowInterruptions: true },
-        );
+        await session.say(greeting, { allowInterruptions: true });
         console.log("[restaurant-es] Greeting sent successfully");
       } catch (err) {
         console.error("[restaurant-es] Error calling session.say():", err);
