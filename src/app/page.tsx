@@ -1,7 +1,7 @@
-import { agents } from "@/lib/agents/registry";
+import { listAgents } from "@/lib/firebase/agents";
 import { DashboardClient } from "@/components/DashboardClient";
 
-export default function HomePage() {
-  const agentList = Object.values(agents);
+export default async function HomePage() {
+  const agentList = await listAgents();
   return <DashboardClient agents={agentList} />;
 }

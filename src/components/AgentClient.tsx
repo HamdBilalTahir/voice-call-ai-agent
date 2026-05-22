@@ -1,9 +1,9 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 "use client";
 
-import { useEffect, useState, useRef } from "react";
+import { useEffect, useState, useRef, useCallback } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
-import { AgentConfig } from "@/lib/agents/registry";
+import { type AgentFullData } from "@/lib/firebase/agents";
 import Link from "next/link";
 import {
   ArrowLeft,
@@ -13,6 +13,7 @@ import {
   MoreHorizontal,
   Sparkles,
   Pencil,
+  AlertTriangle,
 } from "lucide-react";
 import { Switch } from "@/components/ui/switch";
 import { Badge } from "@/components/ui/badge";
@@ -31,13 +32,12 @@ import {
 } from "@/components/ui/dialog";
 import { useToast } from "@/components/ui/toast";
 import { InstructionsTab } from "./AIJobDescriptionTab";
+import { VoiceBehaviorTab } from "./VoiceBehaviorTab";
 
 interface AgentClientProps {
-  agent: AgentConfig;
+  agentData: AgentFullData;
   agentKey: string;
 }
-
-// ---- helpers ----------------------------------------------------------------
 
 function relativeTime(ts: number): string {
   const diff = Date.now() - ts;
@@ -49,8 +49,6 @@ function relativeTime(ts: number): string {
   return `${Math.floor(hours / 24)}d ago`;
 }
 
-// ---- KebabMenu --------------------------------------------------------------
-
 function KebabMenu({ onAction }: { onAction: (action: string) => void }) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
@@ -58,9 +56,8 @@ function KebabMenu({ onAction }: { onAction: (action: string) => void }) {
   useEffect(() => {
     if (!open) return;
     const handler = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) {
+      if (ref.current && !ref.current.contains(e.target as Node))
         setOpen(false);
-      }
     };
     document.addEventListener("mousedown", handler);
     return () => document.removeEventListener("mousedown", handler);
@@ -104,8 +101,6 @@ function KebabMenu({ onAction }: { onAction: (action: string) => void }) {
     </div>
   );
 }
-
-// ---- RecentActivityPanel ----------------------------------------------------
 
 function RecentActivityPanel({
   activeCalls,
@@ -203,41 +198,66 @@ function RecentActivityPanel({
   );
 }
 
-// ---- Tabs -------------------------------------------------------------------
-
 const TABS = [
   { id: "job-description", label: "Instructions" },
-  { id: "knowledge-base", label: "Knowledge" },
   { id: "agent-settings", label: "Voice & Behavior" },
+  { id: "knowledge-base", label: "Knowledge" },
   { id: "actions", label: "Tools & Actions" },
   { id: "connect", label: "Phone & Channels" },
 ] as const;
 
-function TabContent({ tab, agentKey }: { tab: string; agentKey: string }) {
-  if (tab === "job-description") {
-    return <InstructionsTab agentKey={agentKey} />;
-  }
+function ReadOnlyTab({ title }: { title: string }) {
   return (
-    <div className="bg-card border border-border rounded-xl px-6 py-12 text-center">
-      <p className="text-sm text-muted-foreground">Coming soon.</p>
+    <div className="bg-card border border-border rounded-xl px-6 py-10 text-center">
+      <p className="text-sm font-medium text-foreground mb-1">{title}</p>
+      <p className="text-xs text-muted-foreground">
+        Managed by admin — editing coming soon.
+      </p>
     </div>
   );
 }
 
-// ---- AgentClient ------------------------------------------------------------
+function TabContent({
+  tab,
+  agentKey,
+  agentData,
+  onVoiceEnabledChange,
+}: {
+  tab: string;
+  agentKey: string;
+  agentData: AgentFullData;
+  onVoiceEnabledChange: (enabled: boolean) => void;
+}) {
+  if (tab === "job-description") {
+    return <InstructionsTab agentKey={agentKey} initialData={agentData} />;
+  }
+  if (tab === "agent-settings") {
+    return (
+      <VoiceBehaviorTab
+        agentKey={agentKey}
+        initialData={agentData}
+        onVoiceEnabledChange={onVoiceEnabledChange}
+      />
+    );
+  }
+  if (tab === "knowledge-base") return <ReadOnlyTab title="Knowledge base" />;
+  if (tab === "actions") return <ReadOnlyTab title="Tools & Actions" />;
+  if (tab === "connect") return <ReadOnlyTab title="Phone & Channels" />;
+  return null;
+}
 
-export function AgentClient({ agent, agentKey }: AgentClientProps) {
+export function AgentClient({ agentData, agentKey }: AgentClientProps) {
   const searchParams = useSearchParams();
   const router = useRouter();
   const { toast } = useToast();
 
   const [activeCalls, setActiveCalls] = useState<any[]>([]);
   const [callHistory, setCallHistory] = useState<any[]>([]);
-  const [isAgentRunning, setIsAgentRunning] = useState(false);
-  const [isStartingAgent, setIsStartingAgent] = useState(false);
+  const [voiceEnabled, setVoiceEnabled] = useState(agentData.voiceEnabled);
+  const [isTogglingLive, setIsTogglingLive] = useState(false);
   const [now, setNow] = useState(() => Date.now());
   const [isEditingName, setIsEditingName] = useState(false);
-  const [editedName, setEditedName] = useState(agent.name);
+  const [editedName, setEditedName] = useState(agentData.name);
   const [showGoLiveModal, setShowGoLiveModal] = useState(false);
   const nameInputRef = useRef<HTMLInputElement>(null);
 
@@ -253,66 +273,65 @@ export function AgentClient({ agent, agentKey }: AgentClientProps) {
   const activeTab = searchParams.get("tab") ?? "job-description";
 
   const setTab = (tab: string) => {
-    const params = new URLSearchParams(searchParams.toString());
-    params.set("tab", tab);
-    router.push(`?${params.toString()}`);
+    const p = new URLSearchParams(searchParams.toString());
+    p.set("tab", tab);
+    router.push(`?${p.toString()}`);
   };
 
   useEffect(() => {
-    if (!agent) return;
-    let isMounted = true;
-    let timeoutId: NodeJS.Timeout;
-
-    const fetchAllData = async () => {
-      if (!isMounted) return;
+    let mounted = true;
+    let tid: NodeJS.Timeout;
+    const poll = async () => {
+      if (!mounted) return;
       try {
-        const [activeRes, historyRes, statusRes] = await Promise.all([
+        const [activeRes, historyRes] = await Promise.all([
           fetch(`/api/rooms/active?agent=${agentKey}`),
           fetch(`/api/history?agent=${agentKey}`),
-          fetch(`/api/agents/process?agentKey=${agentKey}`),
         ]);
-        if (isMounted) {
+        if (mounted) {
           if (activeRes.ok) setActiveCalls(await activeRes.json());
           if (historyRes.ok) setCallHistory(await historyRes.json());
-          if (statusRes.ok)
-            setIsAgentRunning((await statusRes.json()).isRunning);
         }
-      } catch (error) {
-        if (isMounted) console.error("Error fetching agent data:", error);
+      } catch {
+        // non-critical polling error
       }
-      if (isMounted) {
-        timeoutId = setTimeout(fetchAllData, 3000);
-      }
+      if (mounted) tid = setTimeout(poll, 5000);
     };
-
-    fetchAllData();
+    poll();
     return () => {
-      isMounted = false;
-      clearTimeout(timeoutId);
+      mounted = false;
+      clearTimeout(tid);
     };
-  }, [agentKey, agent]);
+  }, [agentKey]);
 
-  const toggleAgent = async () => {
-    setIsStartingAgent(true);
-    try {
-      const action = isAgentRunning ? "stop" : "start";
-      const res = await fetch("/api/agents/process", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ agentKey, action }),
-      });
-      if (res.ok) setIsAgentRunning((await res.json()).isRunning);
-      else throw new Error("Failed to toggle agent");
-    } catch (e) {
-      console.error(e);
-      toast({
-        message: "Couldn't update the agent — try again in a moment.",
-        variant: "error",
-      });
-    } finally {
-      setIsStartingAgent(false);
-    }
-  };
+  const toggleLive = useCallback(
+    async (newValue: boolean) => {
+      setVoiceEnabled(newValue);
+      setIsTogglingLive(true);
+      try {
+        const res = await fetch(`/api/agents/${agentKey}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            payload: { voiceEnabled: newValue },
+            updatedBy: "system",
+            updatedByName: "App User",
+          }),
+        });
+        if (!res.ok) throw new Error("Failed");
+      } catch {
+        setVoiceEnabled(!newValue);
+        toast({
+          message:
+            "Couldn't update live status — check your connection and try again.",
+          variant: "error",
+        });
+      } finally {
+        setIsTogglingLive(false);
+      }
+    },
+    [agentKey, toast],
+  );
 
   const handleKebabAction = (action: string) => {
     toast({
@@ -321,9 +340,12 @@ export function AgentClient({ agent, agentKey }: AgentClientProps) {
     });
   };
 
+  const lastEditedLabel = agentData.updatedAt
+    ? `Last edited ${relativeTime(agentData.updatedAt)}${agentData.updatedByName ? ` by ${agentData.updatedByName}` : ""}`
+    : null;
+
   return (
     <div className="flex flex-col gap-6">
-      {/* Back link */}
       <div>
         <Link
           href="/"
@@ -334,10 +356,16 @@ export function AgentClient({ agent, agentKey }: AgentClientProps) {
         </Link>
       </div>
 
-      {/* Agent header */}
+      {voiceEnabled && (
+        <div className="flex items-center gap-2 px-4 py-2.5 bg-amber-50 border border-amber-200 rounded-xl text-sm text-amber-800">
+          <AlertTriangle className="size-4 shrink-0 text-amber-500" />
+          This agent is live. Changes apply to the next call, not calls already
+          in progress.
+        </div>
+      )}
+
       <div className="bg-card border border-border rounded-xl px-6 py-5">
         <div className="flex items-start justify-between gap-4">
-          {/* Left: name + badges */}
           <div className="min-w-0">
             {isEditingName ? (
               <input
@@ -363,11 +391,11 @@ export function AgentClient({ agent, agentKey }: AgentClientProps) {
               </button>
             )}
             <p className="text-sm text-muted-foreground mt-1">
-              {agent.description}
+              {agentData.description}
             </p>
             <div className="flex items-center gap-2 mt-3 flex-wrap">
               <Badge variant="secondary" className="gap-1.5">
-                {agent.direction === "inbound" ? (
+                {agentData.direction === "inbound" ? (
                   <>
                     <PhoneIncoming className="size-3" />
                     Answers calls
@@ -379,20 +407,24 @@ export function AgentClient({ agent, agentKey }: AgentClientProps) {
                   </>
                 )}
               </Badge>
-              <Badge variant={isAgentRunning ? "success" : "secondary"}>
+              <Badge variant={voiceEnabled ? "success" : "secondary"}>
                 <span
                   className={`w-1.5 h-1.5 rounded-full ${
-                    isAgentRunning
+                    voiceEnabled
                       ? "bg-success animate-pulse"
                       : "bg-muted-foreground"
                   }`}
                 />
-                {isAgentRunning ? "Live" : "Paused"}
+                {voiceEnabled ? "Live" : "Paused"}
               </Badge>
+              {lastEditedLabel && (
+                <span className="text-xs text-muted-foreground">
+                  {lastEditedLabel}
+                </span>
+              )}
             </div>
           </div>
 
-          {/* Right: Test agent + toggle + kebab */}
           <div className="flex items-center gap-2 shrink-0 mt-1">
             <Link
               href={`/playground?agent=${agentKey}`}
@@ -406,22 +438,22 @@ export function AgentClient({ agent, agentKey }: AgentClientProps) {
 
             <div className="flex items-center gap-2">
               <span className="text-sm text-muted-foreground">
-                {isStartingAgent
-                  ? "Working…"
-                  : isAgentRunning
+                {isTogglingLive
+                  ? "Updating…"
+                  : voiceEnabled
                     ? "Live"
                     : "Paused"}
               </span>
               <Switch
-                checked={isAgentRunning}
+                checked={voiceEnabled}
                 onCheckedChange={(checked) => {
                   if (checked) {
                     setShowGoLiveModal(true);
                   } else {
-                    void toggleAgent();
+                    void toggleLive(false);
                   }
                 }}
-                disabled={isStartingAgent}
+                disabled={isTogglingLive}
               />
             </div>
 
@@ -430,9 +462,7 @@ export function AgentClient({ agent, agentKey }: AgentClientProps) {
         </div>
       </div>
 
-      {/* Main grid: tabs left, activity right */}
       <div className="grid grid-cols-[1fr_360px] gap-8 items-start">
-        {/* Left: tab nav + content */}
         <div className="min-w-0">
           <div className="border-b border-border">
             <nav className="flex gap-0 -mb-px">
@@ -453,11 +483,15 @@ export function AgentClient({ agent, agentKey }: AgentClientProps) {
           </div>
 
           <div className="pt-6">
-            <TabContent tab={activeTab} agentKey={agentKey} />
+            <TabContent
+              tab={activeTab}
+              agentKey={agentKey}
+              agentData={agentData}
+              onVoiceEnabledChange={setVoiceEnabled}
+            />
           </div>
         </div>
 
-        {/* Right: recent activity */}
         <div className="sticky top-24">
           <RecentActivityPanel
             activeCalls={activeCalls}
@@ -467,7 +501,6 @@ export function AgentClient({ agent, agentKey }: AgentClientProps) {
         </div>
       </div>
 
-      {/* Go live confirmation modal */}
       <Dialog open={showGoLiveModal} onClose={() => setShowGoLiveModal(false)}>
         <DialogHeader>
           <DialogTitle>Go live?</DialogTitle>
@@ -476,7 +509,7 @@ export function AgentClient({ agent, agentKey }: AgentClientProps) {
         <DialogContent>
           <DialogDescription>
             Your agent will start{" "}
-            {agent.direction === "inbound"
+            {agentData.direction === "inbound"
               ? "answering real incoming"
               : "placing outgoing"}{" "}
             calls right away. Give it a quick test first if you haven&apos;t
@@ -490,7 +523,7 @@ export function AgentClient({ agent, agentKey }: AgentClientProps) {
           <Button
             onClick={() => {
               setShowGoLiveModal(false);
-              void toggleAgent();
+              void toggleLive(true);
             }}
           >
             Go live

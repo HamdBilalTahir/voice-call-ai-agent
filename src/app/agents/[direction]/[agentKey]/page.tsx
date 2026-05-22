@@ -1,4 +1,4 @@
-import { agents } from "@/lib/agents/registry";
+import { getAgent } from "@/lib/firebase/agents";
 import { AgentClient } from "@/components/AgentClient";
 import Link from "next/link";
 import { Suspense } from "react";
@@ -12,9 +12,9 @@ interface PageProps {
 
 export default async function AgentPage({ params }: PageProps) {
   const { direction, agentKey } = await params;
-  const agent = agents[agentKey];
+  const agentData = await getAgent(agentKey);
 
-  if (!agent || agent.direction !== direction) {
+  if (!agentData || agentData.direction !== direction) {
     return (
       <div className="flex flex-col items-center justify-center py-20 gap-4">
         <h1 className="text-2xl font-semibold text-foreground">
@@ -35,7 +35,7 @@ export default async function AgentPage({ params }: PageProps) {
 
   return (
     <Suspense>
-      <AgentClient agent={agent} agentKey={agentKey} />
+      <AgentClient agentData={agentData} agentKey={agentKey} />
     </Suspense>
   );
 }

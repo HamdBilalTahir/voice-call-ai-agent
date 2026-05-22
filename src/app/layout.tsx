@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import { Inter, Geist_Mono } from "next/font/google";
 import "./globals.css";
 import { AppLayout } from "@/components/AppLayout";
-import { agents } from "@/lib/agents/registry";
+import { listAgents } from "@/lib/firebase/agents";
 
 const inter = Inter({
   variable: "--font-inter",
@@ -20,12 +20,12 @@ export const metadata: Metadata = {
   description: "AI-powered voice agents for your business",
 };
 
-export default function RootLayout({
+export default async function RootLayout({
   children,
 }: Readonly<{
   children: React.ReactNode;
 }>) {
-  const agentList = Object.values(agents);
+  const agentList = await listAgents();
 
   return (
     <html lang="en">

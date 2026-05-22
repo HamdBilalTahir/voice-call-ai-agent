@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
-import { agents } from "@/lib/agents/registry";
+import { listAgents } from "@/lib/firebase/agents";
 
 export async function GET() {
-  return NextResponse.json(Object.values(agents));
+  const agents = await listAgents();
+  return NextResponse.json(agents);
 }

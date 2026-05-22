@@ -8,6 +8,8 @@ export interface AgentConfig {
   dispatchRuleName: string;
   phoneNumber: string;
   description: string;
+  /** Overlaid from Firestore by the data layer — not stored in this registry */
+  voiceEnabled?: boolean;
 }
 
 export const agents: Record<string, AgentConfig> = {

@@ -2,6 +2,32 @@
 
 ---
 
+### 🔌 Integrations
+
+---
+
+> ### Firebase Integration — Agent Voice Configuration (Task 12)
+>
+> - **What changed:** Wired the entire agent read/write path to the existing Firestore `agents/{agentKey}` collection. **Data layer:** new `src/lib/firebase/admin.ts` (server-only Admin SDK singleton) and `src/lib/firebase/agents.ts` — the single module that knows the Firestore schema. Exports `listAgents()`, `getAgent()`, `updateAgentConfig()` (with stale-version conflict detection via `updatedAt` comparison), and `setAgentLiveStatus()`. A `TIER1_WRITE_FIELDS` allowlist enforces that only prompt and voice-settings fields can be written from the UI; all other Firestore fields are preserved via `set({merge:true})`. **API routes:** new `GET /api/agents/[agentKey]` returns full merged agent data; new `PATCH /api/agents/[agentKey]` accepts any Tier-1 payload (routes single-field `voiceEnabled` to the fast live-status path, everything else to the validated update path). Updated `GET/POST /api/agents/[agentKey]/prompt` — GET now reads Firestore first with filesystem fallback for un-migrated agents; POST writes to Firestore only. Updated `GET /api/agents` to list from Firestore. **Server components:** `layout.tsx` and `page.tsx` are now async and call `listAgents()` on every request so the sidebar reflects live `voiceEnabled` status. Agent detail page fetches full `AgentFullData` from Firestore and passes it to the client component. **`AgentClient`:** accepts `AgentFullData` instead of `AgentConfig`. Live/Paused toggle now writes `voiceEnabled` to Firestore with an optimistic update that reverts cleanly on failure. Shows a live-agent warning banner ("Changes apply to the next call") when enabled. Displays "Last edited X ago by Y" audit label from `updatedAt` / `updatedByName`. **`InstructionsTab` (AIJobDescriptionTab):** added `voiceGreeting` (Opening line) and `voiceInstructions` (Voice behavior rules) fields. Full dirty-state tracking (`original` vs `current`); sticky "You have unsaved changes" bar at the bottom with Discard / Save changes actions; `beforeunload` guard when navigating away. Validation: `roleAndResponsibilities` is required. On 409 conflict from the server a modal offers "Reload latest" or "Overwrite anyway". **`VoiceBehaviorTab`** (new): Voice & Behavior tab with Language, Voice type, Voice ID, and STT language selectors; collapsible Advanced section for STT model, TTS model, and LLM model. Same dirty-state + stale-version conflict pattern as the Instructions tab. Sidebar status dots updated from phone-number presence to `voiceEnabled`.
+> - **Why:** Every prompt or voice change previously required editing raw Firestore documents in the Firebase Console — a developer task. This integration is what turns the redesigned UI into a working product for non-technical SMB owners.
+> - **Files:**
+>   - `src/lib/firebase/admin.ts` _(new)_
+>   - `src/lib/firebase/agents.ts` _(new)_
+>   - `src/app/api/agents/[agentKey]/route.ts` _(new)_
+>   - `src/components/VoiceBehaviorTab.tsx` _(new)_
+>   - `src/app/api/agents/[agentKey]/prompt/route.ts`
+>   - `src/app/api/agents/route.ts`
+>   - `src/app/layout.tsx`
+>   - `src/app/page.tsx`
+>   - `src/app/agents/[direction]/[agentKey]/page.tsx`
+>   - `src/components/AgentClient.tsx`
+>   - `src/components/AIJobDescriptionTab.tsx`
+>   - `src/components/Sidebar.tsx`
+>   - `src/lib/agents/registry.ts`
+>   - `.env.example`
+
+---
+
 ### 💬 Microcopy & Tone
 
 ---

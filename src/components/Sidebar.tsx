@@ -240,15 +240,11 @@ function SidebarInner({
                           <span
                             className={cn(
                               "size-1.5 rounded-full shrink-0 transition-colors",
-                              agent.phoneNumber
-                                ? "bg-success"
+                              agent.voiceEnabled
+                                ? "bg-success animate-pulse"
                                 : "bg-muted-foreground/50",
                             )}
-                            title={
-                              agent.phoneNumber
-                                ? "Configured"
-                                : "No number assigned"
-                            }
+                            title={agent.voiceEnabled ? "Live" : "Paused"}
                           />
                           <span className="truncate">{agent.name}</span>
                         </Link>
