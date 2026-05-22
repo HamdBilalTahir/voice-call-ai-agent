@@ -1,11 +1,66 @@
 import "server-only";
 import { FieldValue } from "firebase-admin/firestore";
 import { z } from "zod";
+import fs from "fs/promises";
+import path from "path";
 import { getDb } from "./admin";
 import {
   agents as registryAgents,
   type AgentConfig,
 } from "@/lib/agents/registry";
+
+// ─── Filesystem fallback (for agents not yet migrated to Firestore) ───────────
+
+function extractSection(content: string, sectionName: string): string {
+  const regex = new RegExp(`\\[${sectionName}\\]([\\s\\S]*?)(?=\\[|$)`);
+  const match = content.match(regex);
+  if (!match) return "";
+  return match[1]
+    .trim()
+    .replace(/[`;\s]+$/, "")
+    .trim();
+}
+
+async function readPromptFromFilesystem(
+  agentKey: string,
+  direction: string,
+): Promise<Pick<
+  AgentFullData,
+  | "roleAndResponsibilities"
+  | "personaLanguageAndTone"
+  | "mistakesToAvoid"
+  | "additionalInstructions"
+> | null> {
+  try {
+    const promptPath = path.join(
+      process.cwd(),
+      "src",
+      "lib",
+      "agents",
+      direction,
+      agentKey,
+      "prompt.ts",
+    );
+    const content = await fs.readFile(promptPath, "utf-8");
+    return {
+      roleAndResponsibilities: extractSection(
+        content,
+        "ROLE AND RESPONSIBILITIES",
+      ),
+      personaLanguageAndTone: extractSection(
+        content,
+        "PERSONA LANGUAGE AND TONE",
+      ),
+      mistakesToAvoid: extractSection(content, "MISTAKES TO AVOID"),
+      additionalInstructions: extractSection(
+        content,
+        "ADDITIONAL INSTRUCTIONS",
+      ),
+    };
+  } catch {
+    return null;
+  }
+}
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -33,6 +88,7 @@ export interface AgentFirestoreDoc {
   voiceInstructions?: string;
   voiceSettings?: Partial<VoiceSettings>;
   tools?: string[];
+  migrationApplied?: boolean;
   updatedAt?: FirebaseFirestore.Timestamp;
   updatedBy?: string;
   updatedByName?: string;
@@ -51,6 +107,7 @@ export interface AgentFullData extends AgentConfig {
   voiceInstructions: string;
   voiceSettings: VoiceSettings;
   tools: string[];
+  migrationApplied?: boolean;
   updatedAt?: number; // Unix ms — safe for JSON
   updatedBy?: string;
   updatedByName?: string;
@@ -71,6 +128,7 @@ const TIER1_FIELD_LIST = [
   "voiceInstructions",
   "voiceEnabled",
   "voiceSettings",
+  "migrationApplied",
 ] as const;
 
 export type Tier1Field = (typeof TIER1_FIELD_LIST)[number];
@@ -122,10 +180,11 @@ export const AgentWriteSchema = z
     personaLanguageAndTone: z.string().max(4000).optional(),
     mistakesToAvoid: z.string().max(4000).optional(),
     additionalInstructions: z.string().max(4000).optional(),
-    voiceGreeting: z.string().max(2000).optional(),
+    voiceGreeting: z.string().max(500).optional(),
     voiceInstructions: z.string().max(4000).optional(),
     voiceEnabled: z.boolean().optional(),
     voiceSettings: VoiceSettingsWriteSchema.optional(),
+    migrationApplied: z.boolean().optional(),
   })
   .strict();
 
@@ -171,6 +230,7 @@ function mergeAgentData(
       ...(doc.voiceSettings ?? {}),
     },
     tools: doc.tools ?? [],
+    migrationApplied: doc.migrationApplied,
     updatedAt: doc.updatedAt?.toMillis(),
     updatedBy: doc.updatedBy,
     updatedByName: doc.updatedByName,
@@ -214,10 +274,49 @@ export async function getAgent(
     const db = getDb();
     const docRef = db.collection("agents").doc(agentKey);
     const snap = await docRef.get();
-    return mergeAgentData(
+    const agentData = mergeAgentData(
       config,
       snap.exists ? (snap.data() as AgentFirestoreDoc) : {},
     );
+
+    // If the section fields have never been saved individually, try two fallbacks
+    // in priority order so the UI always shows the agent's actual content.
+    if (
+      !agentData.roleAndResponsibilities &&
+      !agentData.personaLanguageAndTone
+    ) {
+      // 1. voiceInstructions in Firestore contains the full prompt with [HEADERS]
+      if (
+        agentData.voiceInstructions &&
+        /\[ROLE AND RESPONSIBILITIES\]/.test(agentData.voiceInstructions)
+      ) {
+        return {
+          ...agentData,
+          roleAndResponsibilities: extractSection(
+            agentData.voiceInstructions,
+            "ROLE AND RESPONSIBILITIES",
+          ),
+          personaLanguageAndTone: extractSection(
+            agentData.voiceInstructions,
+            "PERSONA LANGUAGE AND TONE",
+          ),
+          mistakesToAvoid: extractSection(
+            agentData.voiceInstructions,
+            "MISTAKES TO AVOID",
+          ),
+          additionalInstructions: extractSection(
+            agentData.voiceInstructions,
+            "ADDITIONAL INSTRUCTIONS",
+          ),
+        };
+      }
+
+      // 2. Static prompt.ts on disk (for agents never saved to Firestore at all)
+      const fsData = await readPromptFromFilesystem(agentKey, config.direction);
+      if (fsData) return { ...agentData, ...fsData };
+    }
+
+    return agentData;
   } catch (err) {
     console.error("[firebase/agents] getAgent failed:", err);
     return mergeAgentData(config, {});

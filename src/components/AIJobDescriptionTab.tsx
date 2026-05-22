@@ -1,7 +1,16 @@
 "use client";
 
-import { useState, useEffect } from "react";
-import { Maximize2, Minimize2, Wand2, AlertCircle } from "lucide-react";
+import { useState, useEffect, useCallback } from "react";
+import {
+  Maximize2,
+  Minimize2,
+  Wand2,
+  AlertCircle,
+  Eye,
+  Copy,
+  X,
+  Info,
+} from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Textarea } from "@/components/ui/textarea";
@@ -16,10 +25,13 @@ function relativeTime(ts: number): string {
   return `${Math.floor(min / 60)}h ago`;
 }
 
-interface InstructionsTabProps {
-  agentKey: string;
-  initialData?: AgentFullData;
+function getCounterColor(current: number, max: number): string {
+  if (current > max) return "text-destructive";
+  if (current >= max * 0.9) return "text-amber-500";
+  return "text-muted-foreground";
 }
+
+// ─── Types ────────────────────────────────────────────────────────────────────
 
 interface PromptSections {
   roleAndResponsibilities: string;
@@ -27,53 +39,62 @@ interface PromptSections {
   mistakesToAvoid: string;
   additionalInstructions: string;
   voiceGreeting: string;
-  voiceInstructions: string;
 }
 
-const SECTION_META: Record<
-  keyof PromptSections,
-  { title: string; helper: string; placeholder: string; required?: boolean }
-> = {
+interface SectionMeta {
+  title: string;
+  helper: string;
+  placeholder: string;
+  required?: boolean;
+  outboundRequired?: boolean;
+  maxLength: number;
+}
+
+const SECTION_META: Record<keyof PromptSections, SectionMeta> = {
   roleAndResponsibilities: {
     title: "What it does",
-    helper: "Describe the agent's main job and the outcome you expect.",
+    helper: "The agent's main job and the outcome you expect.",
     placeholder:
       "e.g. Answer inbound calls from customers looking to book an appointment. Collect their name, preferred date and time, and confirm the booking.",
     required: true,
+    maxLength: 8000,
   },
   personaLanguageAndTone: {
     title: "How it talks",
-    helper:
-      "Set the tone — friendly, professional, concise. Include phrases to always use or avoid.",
+    helper: "Tone, style, phrases to use or avoid.",
     placeholder:
       "e.g. Speak in a warm, professional tone. Use short sentences. Always address the caller by their first name.",
+    maxLength: 4000,
   },
   mistakesToAvoid: {
     title: "What to avoid",
-    helper: "List specific behaviors, topics, or phrases it should never do.",
+    helper: "Behaviors, topics, or phrases it should never do.",
     placeholder:
       "e.g. Never mention competitor names. Do not promise same-day availability without checking first.",
+    maxLength: 4000,
   },
   additionalInstructions: {
     title: "Anything else",
-    helper: "Any extra rules or context that didn't fit above.",
+    helper: "Extra rules or context that didn't fit above.",
     placeholder: "Add any extra rules or context for your agent.",
+    maxLength: 4000,
   },
   voiceGreeting: {
     title: "Opening line",
     helper: "The first thing the agent says when a call connects.",
-    placeholder: 'e.g. "Hi, thanks for calling — how can I help you today?"',
-  },
-  voiceInstructions: {
-    title: "Voice behavior rules",
-    helper:
-      "Rules specific to the voice channel — pacing, silence handling, etc.",
     placeholder:
-      "e.g. Pause for 1 second before responding. If the caller goes silent for 3 seconds, ask if they're still there.",
+      "e.g. Hi, this is Maya from Sunrise Clinic — how can I help you today?",
+    outboundRequired: true,
+    maxLength: 500,
   },
 };
 
-// ─── Stale-version conflict modal ─────────────────────────────────────────────
+interface InstructionsTabProps {
+  agentKey: string;
+  initialData?: AgentFullData;
+}
+
+// ─── Conflict modal ───────────────────────────────────────────────────────────
 
 function ConflictModal({
   updatedByName,
@@ -124,6 +145,135 @@ function ConflictModal({
   );
 }
 
+// ─── Preview modal ────────────────────────────────────────────────────────────
+
+function HighlightedPrompt({ text }: { text: string }) {
+  const parts = text.split(/(\[[^\]]+\])/g);
+  return (
+    <pre className="font-mono text-xs text-foreground whitespace-pre-wrap leading-relaxed">
+      {parts.map((part, i) =>
+        /^\[.+\]$/.test(part) ? (
+          <span key={i} className="text-primary font-semibold">
+            {part}
+          </span>
+        ) : (
+          part
+        ),
+      )}
+    </pre>
+  );
+}
+
+function PreviewModal({
+  agentKey,
+  isDirty,
+  onClose,
+}: {
+  agentKey: string;
+  isDirty: boolean;
+  onClose: () => void;
+}) {
+  const [prompt, setPrompt] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [copied, setCopied] = useState(false);
+
+  useEffect(() => {
+    let mounted = true;
+    const load = async () => {
+      try {
+        const res = await fetch(`/api/agents/${agentKey}/compiled-prompt`);
+        if (!res.ok) throw new Error();
+        const text = await res.text();
+        if (mounted) setPrompt(text);
+      } catch {
+        if (mounted) setPrompt("Failed to load compiled prompt.");
+      } finally {
+        if (mounted) setLoading(false);
+      }
+    };
+    load();
+    return () => {
+      mounted = false;
+    };
+  }, [agentKey]);
+
+  const handleCopy = async () => {
+    if (!prompt) return;
+    await navigator.clipboard.writeText(prompt);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+      <button
+        type="button"
+        aria-label="Close preview"
+        className="absolute inset-0 bg-black/50 backdrop-blur-[2px]"
+        onClick={onClose}
+      />
+      <div className="relative bg-card border border-border rounded-2xl shadow-xl max-w-2xl w-full max-h-[80vh] flex flex-col">
+        <div className="flex items-start justify-between px-6 py-4 border-b border-border">
+          <div>
+            <h3 className="text-sm font-semibold text-foreground">
+              What your agent sees on every call
+            </h3>
+            <p className="text-xs text-muted-foreground mt-0.5">
+              The full instruction set assembled from your inputs. Read-only.
+            </p>
+          </div>
+          <div className="flex items-center gap-1 shrink-0 ml-4">
+            <button
+              onClick={handleCopy}
+              disabled={!prompt || loading}
+              className="flex items-center gap-1.5 px-2 py-1 text-xs text-muted-foreground hover:text-foreground hover:bg-muted rounded-md transition-colors disabled:opacity-40"
+            >
+              <Copy className="size-3.5" />
+              {copied ? "Copied" : "Copy"}
+            </button>
+            <button
+              onClick={onClose}
+              className="p-1 text-muted-foreground hover:text-foreground hover:bg-muted rounded-md transition-colors"
+              aria-label="Close"
+            >
+              <X className="size-4" />
+            </button>
+          </div>
+        </div>
+
+        <div className="flex-1 overflow-y-auto p-6 min-h-0">
+          {loading ? (
+            <div className="flex flex-col gap-2">
+              <Skeleton className="h-3 w-full" />
+              <Skeleton className="h-3 w-4/5" />
+              <Skeleton className="h-3 w-full" />
+              <Skeleton className="h-3 w-3/5" />
+            </div>
+          ) : prompt ? (
+            <HighlightedPrompt text={prompt} />
+          ) : (
+            <p className="text-sm text-muted-foreground">
+              No prompt available.
+            </p>
+          )}
+        </div>
+
+        {isDirty && (
+          <div className="px-6 py-3 border-t border-amber-200 bg-amber-50 flex items-center gap-2 rounded-b-2xl">
+            <Info className="size-3.5 text-amber-600 shrink-0" />
+            <p className="text-xs text-amber-700">
+              You have unsaved changes — this preview reflects your last saved
+              version.
+            </p>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ─── InstructionsTab ──────────────────────────────────────────────────────────
+
 export function InstructionsTab({
   agentKey,
   initialData,
@@ -136,7 +286,6 @@ export function InstructionsTab({
     mistakesToAvoid: "",
     additionalInstructions: "",
     voiceGreeting: "",
-    voiceInstructions: "",
   };
 
   const fromInitial = (d: AgentFullData): PromptSections => ({
@@ -145,7 +294,6 @@ export function InstructionsTab({
     mistakesToAvoid: d.mistakesToAvoid ?? "",
     additionalInstructions: d.additionalInstructions ?? "",
     voiceGreeting: d.voiceGreeting ?? "",
-    voiceInstructions: d.voiceInstructions ?? "",
   });
 
   const [sections, setSections] = useState<PromptSections>(
@@ -153,6 +301,9 @@ export function InstructionsTab({
   );
   const [original, setOriginal] = useState<PromptSections>(
     initialData ? fromInitial(initialData) : empty,
+  );
+  const [callType, setCallType] = useState<"inbound" | "outbound">(
+    initialData?.voiceSettings?.callType ?? "inbound",
   );
   const [serverUpdatedAt, setServerUpdatedAt] = useState<number | undefined>(
     initialData?.updatedAt,
@@ -169,6 +320,10 @@ export function InstructionsTab({
     currentUpdatedAt?: number;
     updatedByName?: string;
   } | null>(null);
+  const [showPreview, setShowPreview] = useState(false);
+  const [showMigrationBanner, setShowMigrationBanner] = useState(
+    initialData?.migrationApplied === true,
+  );
 
   const isDirty = JSON.stringify(sections) !== JSON.stringify(original);
 
@@ -185,7 +340,9 @@ export function InstructionsTab({
           const s = fromInitial(data);
           setSections(s);
           setOriginal(s);
+          setCallType(data.voiceSettings?.callType ?? "inbound");
           setServerUpdatedAt(data.updatedAt);
+          setShowMigrationBanner(data.migrationApplied === true);
           setLoading(false);
         }
       } catch {
@@ -210,25 +367,68 @@ export function InstructionsTab({
     return () => window.removeEventListener("beforeunload", handler);
   }, [isDirty]);
 
-  const validate = (): boolean => {
-    const errors: Partial<Record<keyof PromptSections, string>> = {};
-    if (!sections.roleAndResponsibilities.trim()) {
-      errors.roleAndResponsibilities =
-        "Role & responsibilities is required — it drives the agent's core behaviour.";
+  const validate = useCallback(
+    (values: PromptSections = sections): boolean => {
+      const errors: Partial<Record<keyof PromptSections, string>> = {};
+
+      if (!values.roleAndResponsibilities.trim()) {
+        errors.roleAndResponsibilities =
+          "What it does is required — your agent needs to know its job.";
+      }
+      if (callType === "outbound" && !values.voiceGreeting.trim()) {
+        errors.voiceGreeting =
+          "Outbound agents need an opening line — it's the first thing the caller hears.";
+      }
+      for (const key of Object.keys(SECTION_META) as Array<
+        keyof PromptSections
+      >) {
+        if (values[key].length > SECTION_META[key].maxLength) {
+          errors[key] =
+            `Exceeds ${SECTION_META[key].maxLength.toLocaleString()} character limit.`;
+        }
+      }
+
+      setFieldErrors(errors);
+      return Object.keys(errors).length === 0;
+    },
+    [sections, callType],
+  );
+
+  const clearMigrationBanner = useCallback(async () => {
+    setShowMigrationBanner(false);
+    try {
+      await fetch(`/api/agents/${agentKey}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          payload: { migrationApplied: false },
+          updatedBy: "system",
+          updatedByName: "App User",
+        }),
+      });
+    } catch {
+      // non-critical — banner is already dismissed locally
     }
-    setFieldErrors(errors);
-    return Object.keys(errors).length === 0;
-  };
+  }, [agentKey]);
 
   const doSave = async (force = false) => {
-    if (!validate()) return;
+    const trimmed: PromptSections = {
+      roleAndResponsibilities: sections.roleAndResponsibilities.trim(),
+      personaLanguageAndTone: sections.personaLanguageAndTone.trim(),
+      mistakesToAvoid: sections.mistakesToAvoid.trim(),
+      additionalInstructions: sections.additionalInstructions.trim(),
+      voiceGreeting: sections.voiceGreeting.trim(),
+    };
+
+    if (!validate(trimmed)) return;
     setSaving(true);
+
     try {
       const res = await fetch(`/api/agents/${agentKey}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          payload: sections,
+          payload: trimmed,
           updatedBy: "system",
           updatedByName: "App User",
           updatedAt: serverUpdatedAt,
@@ -251,9 +451,15 @@ export function InstructionsTab({
       }
 
       const data = await res.json();
-      setOriginal({ ...sections });
+      setSections(trimmed);
+      setOriginal(trimmed);
       setServerUpdatedAt(data.updatedAt);
       setConflict(null);
+
+      if (showMigrationBanner) {
+        void clearMigrationBanner();
+      }
+
       toast({
         message: "Saved — changes will apply on the next call.",
         variant: "success",
@@ -286,6 +492,7 @@ export function InstructionsTab({
       const s = fromInitial(data);
       setSections(s);
       setOriginal(s);
+      setCallType(data.voiceSettings?.callType ?? "inbound");
       setServerUpdatedAt(data.updatedAt);
     } catch {
       toast({
@@ -333,7 +540,34 @@ export function InstructionsTab({
         />
       )}
 
+      {showPreview && (
+        <PreviewModal
+          agentKey={agentKey}
+          isDirty={isDirty}
+          onClose={() => setShowPreview(false)}
+        />
+      )}
+
       <div className="flex flex-col gap-6 text-left">
+        {/* Migration banner */}
+        {showMigrationBanner && (
+          <div className="flex items-start gap-3 px-4 py-3 bg-blue-50 border border-blue-200 rounded-xl">
+            <Info className="size-4 text-blue-600 shrink-0 mt-0.5" />
+            <p className="flex-1 text-sm text-blue-800">
+              We&apos;ve reorganised your agent&apos;s instructions into clearer
+              sections. Take a moment to review and click Save to confirm
+              everything looks right.
+            </p>
+            <button
+              onClick={() => void clearMigrationBanner()}
+              className="text-blue-500 hover:text-blue-700 transition-colors shrink-0"
+              aria-label="Dismiss"
+            >
+              <X className="size-4" />
+            </button>
+          </div>
+        )}
+
         <div className="flex items-center justify-between">
           <p className="text-xs text-muted-foreground">
             {isDirty ? "You have unsaved changes." : "All changes saved."}
@@ -354,6 +588,10 @@ export function InstructionsTab({
               const isExpanded = expandedSection === key;
               if (expandedSection && !isExpanded) return null;
 
+              const isRequired =
+                meta.required ||
+                (meta.outboundRequired && callType === "outbound");
+
               return (
                 <div
                   key={key}
@@ -363,7 +601,7 @@ export function InstructionsTab({
                     <div className="flex flex-col gap-0.5">
                       <label className="text-sm font-medium text-foreground">
                         {meta.title}
-                        {meta.required && (
+                        {isRequired && (
                           <span className="text-destructive ml-0.5">*</span>
                         )}
                       </label>
@@ -394,6 +632,7 @@ export function InstructionsTab({
                       </button>
                     </div>
                   </div>
+
                   <Textarea
                     value={sections[key]}
                     onChange={(e) => {
@@ -417,15 +656,37 @@ export function InstructionsTab({
                       t.style.height = `${t.scrollHeight}px`;
                     }}
                   />
-                  {fieldErrors[key] && (
-                    <p className="text-xs text-destructive">
-                      {fieldErrors[key]}
+
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="flex-1">
+                      {fieldErrors[key] && (
+                        <p className="text-xs text-destructive">
+                          {fieldErrors[key]}
+                        </p>
+                      )}
+                    </div>
+                    <p
+                      className={`text-xs tabular-nums shrink-0 ${getCounterColor(sections[key].length, meta.maxLength)}`}
+                    >
+                      {sections[key].length.toLocaleString()} /{" "}
+                      {meta.maxLength.toLocaleString()}
                     </p>
-                  )}
+                  </div>
                 </div>
               );
             },
           )}
+        </div>
+
+        {/* Preview affordance */}
+        <div className="flex justify-center pt-2 pb-1">
+          <button
+            onClick={() => setShowPreview(true)}
+            className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-primary transition-colors"
+          >
+            <Eye className="size-3.5" />
+            Preview what your agent sees
+          </button>
         </div>
       </div>
 

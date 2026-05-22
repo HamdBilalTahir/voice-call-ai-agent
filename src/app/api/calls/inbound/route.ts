@@ -2,6 +2,8 @@ import { NextRequest, NextResponse } from "next/server";
 import { AgentDispatchClient, RoomServiceClient } from "livekit-server-sdk";
 import { z } from "zod";
 import { agents } from "@/lib/agents/registry";
+import { getAgent } from "@/lib/firebase/agents";
+import { buildSystemPrompt } from "@/lib/agents/promptBuilder";
 
 const bodySchema = z.object({
   agentKey: z.string(),
@@ -42,8 +44,26 @@ export async function POST(req: NextRequest) {
     process.env.LIVEKIT_API_SECRET!,
   );
 
+  // Build dispatch metadata including the compiled system prompt so the agent
+  // worker can load instructions dynamically without a separate Firestore read.
+  const dispatchPayload: Record<string, unknown> = { callerNumber };
+  try {
+    const agentData = await getAgent(agentKey);
+    if (agentData) {
+      dispatchPayload.systemPrompt = buildSystemPrompt(agentData);
+      if (agentData.voiceGreeting?.trim()) {
+        dispatchPayload.voiceGreeting = agentData.voiceGreeting.trim();
+      }
+    }
+  } catch (err) {
+    console.error(
+      "[calls/inbound] prompt fetch failed — using static fallback:",
+      err,
+    );
+  }
+
   await dispatchClient.createDispatch(roomName, agent.dispatchRuleName, {
-    metadata: JSON.stringify({ callerNumber }),
+    metadata: JSON.stringify(dispatchPayload),
   });
 
   return NextResponse.json({ roomName });

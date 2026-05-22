@@ -2,11 +2,47 @@
 
 ---
 
+### 🧠 Prompt Architecture
+
+---
+
+> ### Consolidate Instructions to Five Fields — Remove Duplicate Voice Scaffolding
+>
+> - **What changed:** Eliminated the "Voice behavior rules" field from the Instructions tab and moved all platform-level voice scaffolding into a hardcoded constant that is assembled server-side on every call. The tab now shows exactly five fields in a fixed order: **What it does** (required, 8 000 chars), **How it talks** (4 000), **What to avoid** (4 000), **Anything else** (4 000), **Opening line** (500, required only for outbound agents). **Character counters** appear right-aligned below each textarea, turning amber at 90 % capacity and red when the limit is exceeded. Saving is blocked when a required field is empty or a field exceeds its limit; all fields are whitespace-trimmed before saving. **Backend prompt assembly:** new `src/lib/agents/promptBuilder.ts` exports `PLATFORM_VOICE_RULES` (the constant previously stored per-agent as `voiceInstructions`) and `buildSystemPrompt()`, which prepends the platform rules then appends the four section fields with `[BRACKETED HEADERS]`. `voiceGreeting` is a separate utterance, not part of the system prompt. **Dynamic dispatch:** `POST /api/calls/inbound` and `POST /api/calls/test` now fetch the agent's Firestore data, call `buildSystemPrompt()`, and pass `{ systemPrompt, voiceGreeting }` in the LiveKit dispatch metadata so each call uses the latest saved instructions without an agent restart. Both agent worker processes (`restaurant-es`, `sales-en`) read `ctx.job.metadata` at call entry and fall back to their static prompts if metadata is absent. **Compiled-prompt preview:** new `GET /api/agents/[agentKey]/compiled-prompt` endpoint returns the fully assembled prompt as plain text; the Instructions tab surfaces this via a "Preview what your agent sees" link that opens a read-only modal with `[HEADER]` syntax highlighting and a Copy button. **Migration backfill:** new `src/lib/firebase/migration.ts` parses legacy agents whose `voiceInstructions` field contains `[BRACKETED HEADERS]` into the four section fields; agents with free-form `voiceInstructions` have it copied verbatim into `additionalInstructions`; already-populated agents are skipped; `migrationApplied: true` is set on affected documents. New `POST /api/agents/migrate` endpoint (requires `INTERNAL_API_SECRET`) runs the migration safely. A dismissible blue banner is shown on migrated agents until the user saves or clicks × (clearing the server flag via a follow-up PATCH). `voiceInstructions` is never modified — it remains as dormant historical data.
+> - **Why:** Two editable surfaces pointing at overlapping content is the fastest way to lose user trust. An SMB owner will edit one field, see behavior not change, and conclude the product is broken. Five fields with a clear mental model — what the agent does, how it talks, what to avoid, anything extra, opening line — can be understood in 30 seconds without reading docs.
+> - **Files:**
+>   - `src/lib/agents/promptBuilder.ts` _(new)_
+>   - `src/lib/firebase/migration.ts` _(new)_
+>   - `src/app/api/agents/[agentKey]/compiled-prompt/route.ts` _(new)_
+>   - `src/app/api/agents/migrate/route.ts` _(new)_
+>   - `src/components/AIJobDescriptionTab.tsx`
+>   - `src/lib/firebase/agents.ts` _(migrationApplied field, voiceGreeting max → 500)_
+>   - `src/app/api/calls/inbound/route.ts`
+>   - `src/app/api/calls/test/route.ts`
+>   - `src/lib/agents/inbound/restaurant-es/agent.ts`
+>   - `src/lib/agents/outbound/sales-en/agent.ts`
+>   - `.env.example`
+
+---
+
+### 🐛 Fixes
+
+---
+
+> ### Instructions Tab — Pull Existing Prompt Data from Firestore Legacy Field
+>
+> - **What changed:** `getAgent()` now applies a two-tier fallback when the four individual section fields (`roleAndResponsibilities`, `personaLanguageAndTone`, `mistakesToAvoid`, `additionalInstructions`) are all empty in Firestore. **Tier 1 — `voiceInstructions` parse:** if the agent document has a `voiceInstructions` value containing `[ROLE AND RESPONSIBILITIES]` headers (the old monolithic prompt format), the content is split on the fly into the four section fields using the same `extractSection` regex already used by the migration backfill. No Firestore write occurs — the parsed data is returned in memory so the UI renders the agent's real instructions immediately. When the user saves, the values are written to the proper individual fields; subsequent loads read them directly without the fallback. **Tier 2 — filesystem parse:** if `voiceInstructions` is also absent, `getAgent()` reads and parses the agent's static `prompt.ts` file from disk as a last resort. Both fallbacks were added to `src/lib/firebase/agents.ts` alongside the new `extractSection` and `readPromptFromFilesystem` helpers (previously duplicated across `prompt/route.ts` and `migration.ts`).
+> - **Why:** Agents whose prompts were saved through the old UI path had their full content in the `voiceInstructions` field with bracketed section markers, not in the individual fields the new Instructions tab reads. Without this fallback, the tab showed blank placeholders instead of the agent's actual instructions.
+> - **Files:**
+>   - `src/lib/firebase/agents.ts`
+
+---
+
 ### 🔌 Integrations
 
 ---
 
-> ### Firebase Integration — Agent Voice Configuration (Task 12)
+> ### Firebase Integration — Agent Voice Configuration
 >
 > - **What changed:** Wired the entire agent read/write path to the existing Firestore `agents/{agentKey}` collection. **Data layer:** new `src/lib/firebase/admin.ts` (server-only Admin SDK singleton) and `src/lib/firebase/agents.ts` — the single module that knows the Firestore schema. Exports `listAgents()`, `getAgent()`, `updateAgentConfig()` (with stale-version conflict detection via `updatedAt` comparison), and `setAgentLiveStatus()`. A `TIER1_WRITE_FIELDS` allowlist enforces that only prompt and voice-settings fields can be written from the UI; all other Firestore fields are preserved via `set({merge:true})`. **API routes:** new `GET /api/agents/[agentKey]` returns full merged agent data; new `PATCH /api/agents/[agentKey]` accepts any Tier-1 payload (routes single-field `voiceEnabled` to the fast live-status path, everything else to the validated update path). Updated `GET/POST /api/agents/[agentKey]/prompt` — GET now reads Firestore first with filesystem fallback for un-migrated agents; POST writes to Firestore only. Updated `GET /api/agents` to list from Firestore. **Server components:** `layout.tsx` and `page.tsx` are now async and call `listAgents()` on every request so the sidebar reflects live `voiceEnabled` status. Agent detail page fetches full `AgentFullData` from Firestore and passes it to the client component. **`AgentClient`:** accepts `AgentFullData` instead of `AgentConfig`. Live/Paused toggle now writes `voiceEnabled` to Firestore with an optimistic update that reverts cleanly on failure. Shows a live-agent warning banner ("Changes apply to the next call") when enabled. Displays "Last edited X ago by Y" audit label from `updatedAt` / `updatedByName`. **`InstructionsTab` (AIJobDescriptionTab):** added `voiceGreeting` (Opening line) and `voiceInstructions` (Voice behavior rules) fields. Full dirty-state tracking (`original` vs `current`); sticky "You have unsaved changes" bar at the bottom with Discard / Save changes actions; `beforeunload` guard when navigating away. Validation: `roleAndResponsibilities` is required. On 409 conflict from the server a modal offers "Reload latest" or "Overwrite anyway". **`VoiceBehaviorTab`** (new): Voice & Behavior tab with Language, Voice type, Voice ID, and STT language selectors; collapsible Advanced section for STT model, TTS model, and LLM model. Same dirty-state + stale-version conflict pattern as the Instructions tab. Sidebar status dots updated from phone-number presence to `voiceEnabled`.
 > - **Why:** Every prompt or voice change previously required editing raw Firestore documents in the Firebase Console — a developer task. This integration is what turns the redesigned UI into a working product for non-technical SMB owners.
