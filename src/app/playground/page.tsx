@@ -1,9 +1,9 @@
-import { agents } from "@/lib/agents/registry";
+import { listAgents } from "@/lib/firebase/agents";
 import { PlaygroundClient } from "@/components/PlaygroundClient";
 import { Suspense } from "react";
 
-export default function PlaygroundPage() {
-  const agentList = Object.values(agents);
+export default async function PlaygroundPage() {
+  const agentList = await listAgents();
   return (
     <Suspense>
       <PlaygroundClient agents={agentList} />

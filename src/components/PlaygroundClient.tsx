@@ -11,25 +11,17 @@ import {
   useLocalParticipant,
 } from "@livekit/components-react";
 import "@livekit/components-styles";
-import {
-  AlertTriangle,
-  ChevronDown,
-  Clock,
-  Copy,
-  Check,
-  Mic,
-  Phone,
-} from "lucide-react";
+import { ChevronDown, Copy, Check, Mic, Phone } from "lucide-react";
 import { AgentConfig } from "@/lib/agents/registry";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
-import { Badge } from "@/components/ui/badge";
 import { Card } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useToast } from "@/components/ui/toast";
 import { translateToEnglish } from "@/lib/translation";
 import { TestCallModal } from "@/components/TestCallModal";
+import { type UsageData, calculateCost, formatCost } from "@/lib/pricing";
 
 // ---- Types ------------------------------------------------------------------
 
@@ -46,15 +38,7 @@ interface PromptSections {
   personaLanguageAndTone: string;
   mistakesToAvoid: string;
   additionalInstructions: string;
-}
-
-interface PlaygroundSession {
-  id: string;
-  agentKey: string;
-  agentName: string;
-  mode: "web" | "phone";
-  startedAt: number;
-  lineCount: number;
+  voiceGreeting: string;
 }
 
 // ---- Constants --------------------------------------------------------------
@@ -75,80 +59,10 @@ const SECTION_LABELS: Record<keyof PromptSections, string> = {
   personaLanguageAndTone: "How it talks",
   mistakesToAvoid: "What to avoid",
   additionalInstructions: "Anything else",
+  voiceGreeting: "Opening line",
 };
 
-const STORAGE_KEY = "playground-sessions";
-
 // ---- Helpers ----------------------------------------------------------------
-
-function relativeTime(ts: number): string {
-  const diff = Date.now() - ts;
-  const min = Math.floor(diff / 60_000);
-  if (min < 1) return "just now";
-  if (min < 60) return `${min}m ago`;
-  const h = Math.floor(min / 60);
-  if (h < 24) return `${h}h ago`;
-  return `${Math.floor(h / 24)}d ago`;
-}
-
-function loadSessions(agentKey: string): PlaygroundSession[] {
-  if (typeof window === "undefined") return [];
-  try {
-    const all: PlaygroundSession[] = JSON.parse(
-      localStorage.getItem(STORAGE_KEY) ?? "[]",
-    );
-    return all.filter((s) => s.agentKey === agentKey).slice(0, 5);
-  } catch {
-    return [];
-  }
-}
-
-function persistSession(session: PlaygroundSession): void {
-  if (typeof window === "undefined") return;
-  try {
-    const all: PlaygroundSession[] = JSON.parse(
-      localStorage.getItem(STORAGE_KEY) ?? "[]",
-    );
-    localStorage.setItem(
-      STORAGE_KEY,
-      JSON.stringify([session, ...all].slice(0, 20)),
-    );
-  } catch {
-    // ignore
-  }
-}
-
-// ---- SandboxBanner ----------------------------------------------------------
-
-function SandboxBanner({
-  onSave,
-  onDiscard,
-  saving,
-}: {
-  onSave: () => void;
-  onDiscard: () => void;
-  saving: boolean;
-}) {
-  return (
-    <div className="flex items-center gap-2 px-3 py-2 bg-warning/10 border border-warning/30 rounded-lg text-xs">
-      <AlertTriangle className="size-3.5 text-warning shrink-0" />
-      <span className="flex-1 text-warning font-medium">Unsaved changes</span>
-      <button
-        onClick={onDiscard}
-        className="text-muted-foreground hover:text-foreground transition-colors"
-      >
-        Discard
-      </button>
-      <button
-        onClick={onSave}
-        disabled={saving}
-        className="text-primary font-semibold hover:text-primary/80 transition-colors disabled:opacity-50 ml-1"
-      >
-        {saving ? "Saving…" : "Save"}
-      </button>
-    </div>
-  );
-}
 
 // ---- TranscriptCapture (must live inside <LiveKitRoom>) ---------------------
 
@@ -348,21 +262,122 @@ function TranscriptPanel({
   );
 }
 
+// ---- CostPanel --------------------------------------------------------------
+
+function CostPanel({
+  usage,
+  loading,
+}: {
+  usage: UsageData | null;
+  loading?: boolean;
+}) {
+  if (loading) {
+    return (
+      <Card className="p-4">
+        <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground mb-3">
+          Cost estimate
+        </p>
+        <div className="flex flex-col gap-2">
+          <Skeleton className="h-3 w-full" />
+          <Skeleton className="h-3 w-3/4" />
+          <Skeleton className="h-3 w-1/2" />
+        </div>
+      </Card>
+    );
+  }
+  if (!usage) return null;
+  const cost = calculateCost(usage);
+  const durationSec = Math.round(usage.callDurationMs / 1000);
+  const mins = Math.floor(durationSec / 60);
+  const secs = durationSec % 60;
+  const duration = mins > 0 ? `${mins}m ${secs}s` : `${secs}s`;
+
+  return (
+    <Card className="p-4 flex flex-col gap-3">
+      <div className="flex items-center justify-between">
+        <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+          Cost estimate
+        </p>
+        <p className="text-xs text-muted-foreground">{duration}</p>
+      </div>
+
+      <div className="flex flex-col divide-y divide-border text-xs">
+        {/* LLM */}
+        <div className="py-2 flex flex-col gap-0.5">
+          <div className="flex justify-between">
+            <span className="font-medium text-foreground">LLM</span>
+            <span className="text-foreground font-medium">
+              {formatCost(cost.llm.total)}
+            </span>
+          </div>
+          <span className="text-muted-foreground">
+            {usage.inputTokens.toLocaleString()} in ·{" "}
+            {usage.outputTokens.toLocaleString()} out tokens
+          </span>
+        </div>
+
+        {/* STT */}
+        <div className="py-2 flex flex-col gap-0.5">
+          <div className="flex justify-between">
+            <span className="font-medium text-foreground">STT</span>
+            <span className="text-foreground font-medium">
+              {formatCost(cost.stt.total)}
+            </span>
+          </div>
+          <span className="text-muted-foreground">
+            {(usage.sttAudioMs / 60000).toFixed(2)} min audio
+          </span>
+        </div>
+
+        {/* TTS */}
+        <div className="py-2 flex flex-col gap-0.5">
+          <div className="flex justify-between">
+            <span className="font-medium text-foreground">TTS</span>
+            <span className="text-foreground font-medium">
+              {formatCost(cost.tts.total)}
+            </span>
+          </div>
+          <span className="text-muted-foreground">
+            {usage.ttsCharacters.toLocaleString()} chars ·{" "}
+            {(usage.ttsAudioMs / 1000).toFixed(1)}s audio
+          </span>
+        </div>
+      </div>
+
+      <div className="flex items-center justify-between pt-1 border-t border-border">
+        <span className="text-xs font-semibold text-foreground">Total</span>
+        <span className="text-sm font-bold text-foreground">
+          {formatCost(cost.total)}
+        </span>
+      </div>
+      <div className="flex items-center justify-between -mt-2">
+        <span className="text-xs text-muted-foreground">Per minute</span>
+        <span className="text-xs font-semibold text-primary">
+          {formatCost(cost.perMinute)}/min
+        </span>
+      </div>
+    </Card>
+  );
+}
+
 // ---- WebTestPanel -----------------------------------------------------------
 
 function WebTestPanel({
   agentKey,
   onTranscriptUpdate,
-  onSessionEnd,
+  onUsage,
+  onCallEnded,
 }: {
   agentKey: string;
   onTranscriptUpdate: (lines: TranscriptLine[]) => void;
-  onSessionEnd: () => void;
+  onUsage: (u: UsageData) => void;
+  onCallEnded: () => void;
 }) {
   const [token, setToken] = useState("");
   const [url, setUrl] = useState("");
   const [isConnecting, setIsConnecting] = useState(false);
   const [error, setError] = useState("");
+  const roomNameRef = useRef<string>("");
 
   const connect = async () => {
     setIsConnecting(true);
@@ -375,6 +390,7 @@ function WebTestPanel({
       });
 
       const roomName = `playground-${agentKey}-${Date.now()}`;
+      roomNameRef.current = roomName;
 
       const tokenRes = await fetch("/api/livekit/token", {
         method: "POST",
@@ -448,12 +464,30 @@ function WebTestPanel({
       onDisconnected={async () => {
         setToken("");
         setUrl("");
-        onSessionEnd();
+        onCallEnded();
         await fetch("/api/agents/process", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ agentKey, action: "stop" }),
         });
+        // Poll for usage file — agent writes it on session close (async after disconnect)
+        const room = roomNameRef.current;
+        if (!room) return;
+        let attempts = 0;
+        const tryFetch = async () => {
+          try {
+            const res = await fetch(`/api/calls/${room}/usage`);
+            if (res.ok) {
+              const data = await res.json();
+              if (data.type === "call_usage") {
+                onUsage(data);
+                return;
+              }
+            }
+          } catch {}
+          if (++attempts < 5) setTimeout(tryFetch, 1500);
+        };
+        setTimeout(tryFetch, 2000);
       }}
       data-lk-theme="default"
     >
@@ -535,7 +569,12 @@ function PhoneTestPanel({
           "Content-Type": "application/json",
           Authorization: `Bearer ${process.env.NEXT_PUBLIC_INTERNAL_API_SECRET}`,
         },
-        body: JSON.stringify({ toNumber: fullNumber, agentKey }),
+        body: JSON.stringify({
+          toNumber: fullNumber,
+          agentKey,
+          isPlayground: true,
+          testType: "phoneCall",
+        }),
       });
       if (!res.ok) throw new Error("Call failed");
       const data = await res.json();
@@ -608,44 +647,6 @@ function PhoneTestPanel({
   );
 }
 
-// ---- SessionHistory ---------------------------------------------------------
-
-function SessionHistory({ sessions }: { sessions: PlaygroundSession[] }) {
-  if (sessions.length === 0) return null;
-
-  return (
-    <div className="flex flex-col gap-3">
-      <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-        Recent sessions
-      </h3>
-      <div className="flex flex-col gap-2">
-        {sessions.map((s) => (
-          <div
-            key={s.id}
-            className="flex items-center justify-between px-4 py-3 bg-card border border-border rounded-xl"
-          >
-            <div className="flex items-center gap-3">
-              <Clock className="size-3.5 text-muted-foreground shrink-0" />
-              <div>
-                <p className="text-xs font-medium text-foreground">
-                  {s.mode === "web" ? "Browser call" : "Phone call"}
-                </p>
-                <p className="text-xs text-muted-foreground mt-0.5">
-                  {relativeTime(s.startedAt)}
-                  {s.lineCount > 0 ? ` · ${s.lineCount} lines` : ""}
-                </p>
-              </div>
-            </div>
-            <Badge variant="secondary" className="capitalize">
-              {s.mode}
-            </Badge>
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-}
-
 // ---- PlaygroundClient (main) ------------------------------------------------
 
 export function PlaygroundClient({ agents }: { agents: AgentConfig[] }) {
@@ -656,18 +657,15 @@ export function PlaygroundClient({ agents }: { agents: AgentConfig[] }) {
   const [selectedAgentKey, setSelectedAgentKey] = useState(initialKey);
   const [testMode, setTestMode] = useState<"web" | "phone">("web");
   const [transcript, setTranscript] = useState<TranscriptLine[]>([]);
-  const [sandboxOpen, setSandboxOpen] = useState(false);
+  const [callUsage, setCallUsage] = useState<UsageData | null>(null);
+  const [isCalculatingUsage, setIsCalculatingUsage] = useState(false);
   const [savedSections, setSavedSections] = useState<PromptSections | null>(
     null,
   );
-  const [sandboxSections, setSandboxSections] = useState<PromptSections | null>(
-    null,
-  );
+  const [playgroundSections, setPlaygroundSections] =
+    useState<PromptSections | null>(null);
   const [promptLoading, setPromptLoading] = useState(false);
-  const [isSavingSandbox, setIsSavingSandbox] = useState(false);
-  const [sessions, setSessions] = useState<PlaygroundSession[]>(() =>
-    loadSessions(initialKey),
-  );
+  const [isSavingPlayground, setIsSavingPlayground] = useState(false);
   const transcriptRef = useRef<TranscriptLine[]>([]);
 
   const selectedAgent =
@@ -677,37 +675,36 @@ export function PlaygroundClient({ agents }: { agents: AgentConfig[] }) {
     if (!selectedAgentKey) return;
     setPromptLoading(true);
     setSavedSections(null);
-    setSandboxSections(null);
-    setSandboxOpen(false);
+    setPlaygroundSections(null);
     setTranscript([]);
+    setCallUsage(null);
     transcriptRef.current = [];
-    setSessions(loadSessions(selectedAgentKey));
 
     fetch(`/api/agents/${selectedAgentKey}/prompt`)
       .then((r) => r.json())
       .then((data: PromptSections) => {
         setSavedSections(data);
-        setSandboxSections(data);
+        setPlaygroundSections(data);
       })
       .finally(() => setPromptLoading(false));
   }, [selectedAgentKey]);
 
-  const hasSandboxChanges =
+  const hasPlaygroundChanges =
     savedSections !== null &&
-    sandboxSections !== null &&
-    JSON.stringify(savedSections) !== JSON.stringify(sandboxSections);
+    playgroundSections !== null &&
+    JSON.stringify(savedSections) !== JSON.stringify(playgroundSections);
 
-  const handleSaveSandbox = async () => {
-    if (!sandboxSections) return;
-    setIsSavingSandbox(true);
+  const handleSavePlayground = async () => {
+    if (!playgroundSections) return;
+    setIsSavingPlayground(true);
     try {
       const res = await fetch(`/api/agents/${selectedAgentKey}/prompt`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(sandboxSections),
+        body: JSON.stringify(playgroundSections),
       });
       if (!res.ok) throw new Error();
-      setSavedSections(sandboxSections);
+      setSavedSections(playgroundSections);
       toast({
         message: "Saved — changes are live in a few seconds.",
         variant: "success",
@@ -718,7 +715,7 @@ export function PlaygroundClient({ agents }: { agents: AgentConfig[] }) {
         variant: "error",
       });
     } finally {
-      setIsSavingSandbox(false);
+      setIsSavingPlayground(false);
     }
   };
 
@@ -727,18 +724,15 @@ export function PlaygroundClient({ agents }: { agents: AgentConfig[] }) {
     setTranscript([...lines]);
   }, []);
 
-  const handleSessionEnd = useCallback(() => {
-    const session: PlaygroundSession = {
-      id: Date.now().toString(),
-      agentKey: selectedAgentKey,
-      agentName: selectedAgent?.name ?? "",
-      mode: testMode,
-      startedAt: Date.now(),
-      lineCount: transcriptRef.current.filter((t) => t.isFinal).length,
-    };
-    persistSession(session);
-    setSessions(loadSessions(selectedAgentKey));
-  }, [selectedAgentKey, selectedAgent, testMode]);
+  const handleCallEnded = useCallback(() => {
+    setCallUsage(null);
+    setIsCalculatingUsage(true);
+  }, []);
+
+  const handleUsage = useCallback((u: UsageData) => {
+    setCallUsage(u);
+    setIsCalculatingUsage(false);
+  }, []);
 
   if (agents.length === 0) {
     return (
@@ -757,14 +751,15 @@ export function PlaygroundClient({ agents }: { agents: AgentConfig[] }) {
       <div>
         <h1 className="text-2xl font-semibold text-foreground">Playground</h1>
         <p className="text-sm text-muted-foreground mt-1">
-          Test your agent before it goes live. Edits here are sandboxed.
+          Test your agent before it goes live. Changes you make here are saved
+          immediately.
         </p>
       </div>
 
-      {/* 3-pane layout */}
+      {/* 2-pane layout: left = test + transcript, right = instructions */}
       <div className="flex gap-6 items-start">
-        {/* ── Left pane ── */}
-        <div className="w-[272px] shrink-0 flex flex-col gap-4">
+        {/* ── Left pane (test + transcript) ── */}
+        <div className="w-[280px] shrink-0 flex flex-col gap-4">
           {/* Agent picker */}
           <div className="flex flex-col gap-1.5">
             <label
@@ -795,90 +790,15 @@ export function PlaygroundClient({ agents }: { agents: AgentConfig[] }) {
             )}
           </div>
 
-          {/* Sandbox banner */}
-          {hasSandboxChanges && (
-            <SandboxBanner
-              onSave={handleSaveSandbox}
-              onDiscard={() => setSandboxSections(savedSections)}
-              saving={isSavingSandbox}
-            />
-          )}
-
-          {/* Instructions */}
-          <div className="flex flex-col gap-2">
-            <div className="flex items-center justify-between">
-              <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                Instructions
-              </p>
-              <button
-                onClick={() => setSandboxOpen((v) => !v)}
-                className="text-xs text-primary hover:text-primary/80 transition-colors"
-              >
-                {sandboxOpen ? "Collapse" : "Edit in sandbox"}
-              </button>
-            </div>
-
-            {!sandboxOpen ? (
-              <div className="px-3 py-2.5 bg-muted/40 border border-border rounded-lg">
-                {promptLoading ? (
-                  <div className="flex flex-col gap-1.5">
-                    <Skeleton className="h-3 w-full" />
-                    <Skeleton className="h-3 w-3/4" />
-                  </div>
-                ) : (
-                  <p className="text-xs text-muted-foreground line-clamp-3 leading-relaxed">
-                    {savedSections?.roleAndResponsibilities ||
-                      "No instructions yet."}
-                  </p>
-                )}
-              </div>
-            ) : promptLoading ? (
-              <div className="flex flex-col gap-3">
-                {[1, 2, 3, 4].map((i) => (
-                  <div key={i} className="flex flex-col gap-1">
-                    <Skeleton className="h-3 w-24" />
-                    <Skeleton className="h-16 w-full" />
-                  </div>
-                ))}
-              </div>
-            ) : (
-              <div className="flex flex-col gap-3">
-                {sandboxSections &&
-                  (
-                    Object.keys(SECTION_LABELS) as Array<keyof PromptSections>
-                  ).map((key) => (
-                    <div key={key} className="flex flex-col gap-1">
-                      <label className="text-xs font-medium text-foreground">
-                        {SECTION_LABELS[key]}
-                      </label>
-                      <Textarea
-                        value={sandboxSections[key]}
-                        onChange={(e) =>
-                          setSandboxSections((prev) =>
-                            prev ? { ...prev, [key]: e.target.value } : prev,
-                          )
-                        }
-                        className="text-xs font-mono leading-relaxed"
-                        style={{ minHeight: "72px" }}
-                      />
-                    </div>
-                  ))}
-              </div>
-            )}
-          </div>
-        </div>
-
-        {/* ── Center pane ── */}
-        <div className="flex-1 min-w-0 flex flex-col gap-5">
+          {/* Test panel */}
           <Card className="overflow-hidden">
-            {/* Mode tabs */}
-            <div className="border-b border-border px-4">
+            <div className="border-b border-border px-3">
               <nav className="flex -mb-px">
                 {(["web", "phone"] as const).map((mode) => (
                   <button
                     key={mode}
                     onClick={() => setTestMode(mode)}
-                    className={`px-4 py-2.5 text-sm font-medium border-b-2 transition-colors ${
+                    className={`px-3 py-2 text-xs font-medium border-b-2 transition-colors ${
                       testMode === mode
                         ? "border-primary text-primary"
                         : "border-transparent text-muted-foreground hover:text-foreground"
@@ -889,15 +809,14 @@ export function PlaygroundClient({ agents }: { agents: AgentConfig[] }) {
                 ))}
               </nav>
             </div>
-
-            {/* Test surface — key forces remount on agent change */}
-            <div className="px-4">
+            <div className="px-3">
               {testMode === "web" ? (
                 <WebTestPanel
                   key={`web-${selectedAgentKey}`}
                   agentKey={selectedAgentKey}
                   onTranscriptUpdate={handleTranscriptUpdate}
-                  onSessionEnd={handleSessionEnd}
+                  onUsage={handleUsage}
+                  onCallEnded={handleCallEnded}
                 />
               ) : (
                 <PhoneTestPanel
@@ -909,15 +828,86 @@ export function PlaygroundClient({ agents }: { agents: AgentConfig[] }) {
             </div>
           </Card>
 
-          <SessionHistory sessions={sessions} />
-        </div>
-
-        {/* ── Right pane ── */}
-        <div className="w-[320px] shrink-0">
+          {/* Transcript */}
           <TranscriptPanel
             transcript={transcript}
             agentKey={selectedAgentKey}
           />
+
+          {/* Cost breakdown — appears after call ends */}
+          <CostPanel usage={callUsage} loading={isCalculatingUsage} />
+        </div>
+
+        {/* ── Main pane (instructions) ── */}
+        <div className="flex-1 min-w-0 flex flex-col gap-4">
+          <Card className="p-6">
+            <div className="flex items-center justify-between mb-5">
+              <p className="text-sm font-semibold text-foreground">
+                Instructions
+              </p>
+              {hasPlaygroundChanges && (
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={() => setPlaygroundSections(savedSections)}
+                    className="text-xs text-muted-foreground hover:text-foreground transition-colors"
+                  >
+                    Discard
+                  </button>
+                  <button
+                    onClick={handleSavePlayground}
+                    disabled={isSavingPlayground}
+                    className="px-3 py-1.5 text-xs font-semibold bg-primary text-primary-foreground rounded-md hover:bg-primary/90 transition-colors disabled:opacity-50"
+                  >
+                    {isSavingPlayground ? "Saving…" : "Save"}
+                  </button>
+                </div>
+              )}
+            </div>
+
+            {promptLoading ? (
+              <div className="flex flex-col gap-5">
+                {[1, 2, 3, 4].map((i) => (
+                  <div key={i} className="flex flex-col gap-1.5">
+                    <Skeleton className="h-3 w-28" />
+                    <Skeleton className="h-24 w-full" />
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="flex flex-col gap-5">
+                {playgroundSections &&
+                  (
+                    Object.keys(SECTION_LABELS) as Array<keyof PromptSections>
+                  ).map((key) => (
+                    <div key={key} className="flex flex-col gap-1.5">
+                      <label className="text-sm font-medium text-foreground">
+                        {SECTION_LABELS[key]}
+                      </label>
+                      <Textarea
+                        value={playgroundSections[key]}
+                        onChange={(e) => {
+                          const el = e.target;
+                          el.style.height = "auto";
+                          el.style.height = `${el.scrollHeight}px`;
+                          setPlaygroundSections((prev) =>
+                            prev ? { ...prev, [key]: e.target.value } : prev,
+                          );
+                        }}
+                        onFocus={(e) => {
+                          const el = e.target;
+                          el.style.height = "auto";
+                          el.style.height = `${el.scrollHeight}px`;
+                        }}
+                        className="leading-relaxed resize-none overflow-hidden"
+                        style={{
+                          minHeight: key === "voiceGreeting" ? "56px" : "80px",
+                        }}
+                      />
+                    </div>
+                  ))}
+              </div>
+            )}
+          </Card>
         </div>
       </div>
     </div>

@@ -3,7 +3,7 @@ import { AgentDispatchClient, RoomServiceClient } from "livekit-server-sdk";
 import { z } from "zod";
 import { agents } from "@/lib/agents/registry";
 import { getAgent } from "@/lib/firebase/agents";
-import { buildSystemPrompt } from "@/lib/agents/promptBuilder";
+import { buildDispatchMetadata } from "@/lib/agents/promptBuilder";
 
 const bodySchema = z.object({
   agentKey: z.string(),
@@ -46,14 +46,11 @@ export async function POST(req: NextRequest) {
 
   // Build dispatch metadata including the compiled system prompt so the agent
   // worker can load instructions dynamically without a separate Firestore read.
-  const dispatchPayload: Record<string, unknown> = { callerNumber };
+  let dispatchMetadata: string | undefined;
   try {
     const agentData = await getAgent(agentKey);
     if (agentData) {
-      dispatchPayload.systemPrompt = buildSystemPrompt(agentData);
-      if (agentData.voiceGreeting?.trim()) {
-        dispatchPayload.voiceGreeting = agentData.voiceGreeting.trim();
-      }
+      dispatchMetadata = buildDispatchMetadata(agentData, { callerNumber });
     }
   } catch (err) {
     console.error(
@@ -63,7 +60,7 @@ export async function POST(req: NextRequest) {
   }
 
   await dispatchClient.createDispatch(roomName, agent.dispatchRuleName, {
-    metadata: JSON.stringify(dispatchPayload),
+    metadata: dispatchMetadata ?? JSON.stringify({ callerNumber }),
   });
 
   return NextResponse.json({ roomName });

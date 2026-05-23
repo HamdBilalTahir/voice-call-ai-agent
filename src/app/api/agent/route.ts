@@ -1,15 +1,8 @@
+import fs from "fs";
+import path from "path";
 import { NextResponse } from "next/server";
-import { z } from "zod";
 import { verifyLiveKitWebhook } from "@/lib/livekit";
-
-const dispatchSchema = z.object({
-  id: z.string().optional(),
-  createdAt: z.number().optional(),
-  event: z.string().optional(),
-  room: z.object({
-    name: z.string(),
-  }),
-});
+import { getCallRecord, updateCallRecord, type CallUsage } from "@/lib/history";
 
 export async function POST(req: Request) {
   try {
@@ -33,32 +26,67 @@ export async function POST(req: Request) {
     }
 
     const json = JSON.parse(bodyText);
-    const result = dispatchSchema.safeParse(json);
+    const event: string = json.event ?? "";
+    const roomName: string = json.room?.name ?? "";
+    // LiveKit room.creation_time is Unix seconds
+    const lkCreationTime: number | undefined = json.room?.creation_time
+      ? json.room.creation_time * 1000
+      : undefined;
 
-    if (!result.success) {
-      return NextResponse.json(
-        { error: "Invalid dispatch payload", details: result.error.format() },
-        { status: 400 },
-      );
+    if (event === "room_started" && roomName) {
+      // Record the exact time LiveKit considers the call to have started
+      await updateCallRecord(roomName, {
+        ...(lkCreationTime ? { callStartedAt: lkCreationTime } : {}),
+      });
     }
 
-    // Acknowledge the dispatch immediately
-    // In a production serverless environment, you'd offload this process.
-    // In a typical Node.js long-running environment, this starts the agent.
-    setTimeout(async () => {
-      try {
-        // We defer full agent execution here because running the entire worker logic in standard Next.js functions requires fluid compute/proper long polling environments
-        console.log("Worker dispatched for room:", result.data.room.name);
-      } catch (e) {
-        console.error("Agent launch error", e);
+    if (event === "room_finished" && roomName) {
+      const callEndedAt = Date.now();
+      const record = await getCallRecord(roomName);
+      if (record && record.status === "in-progress") {
+        const duration = record.startTime
+          ? Math.round((callEndedAt - record.startTime) / 1000)
+          : undefined;
+
+        // Read usage file written by the agent worker on session close
+        let usage: CallUsage | undefined;
+        try {
+          const usageFile = path.join(
+            process.cwd(),
+            ".agent-usage",
+            `${roomName}.json`,
+          );
+          const raw = fs.readFileSync(usageFile, "utf-8");
+          const parsed = JSON.parse(raw);
+          if (parsed.type === "call_usage") {
+            // eslint-disable-next-line @typescript-eslint/no-unused-vars
+            const { type: _type, ...rest } = parsed;
+            usage = rest as CallUsage;
+          }
+        } catch {
+          // usage file not available — phone calls or calls that ended before agent wrote it
+        }
+
+        await updateCallRecord(roomName, {
+          status: "completed",
+          outcome: "completed",
+          endTime: callEndedAt,
+          callEndedAt,
+          duration,
+          ...(lkCreationTime ? { callStartedAt: lkCreationTime } : {}),
+          ...(usage ? { usage } : {}),
+        });
+        console.log(
+          `[webhook] room_finished — marked ${roomName} completed (${duration}s)${usage ? ", usage saved" : ""}`,
+        );
       }
-    }, 0);
+    }
 
     return NextResponse.json({ success: true }, { status: 200 });
   } catch (error) {
-    console.error("Agent dispatch error:", error);
+    console.error("Webhook handler error:", error);
     return NextResponse.json(
-      { error: "Internal server error during agent dispatch" },
+      { error: "Internal server error" },
       { status: 500 },
     );
   }

@@ -23,7 +23,8 @@ import {
   Loader2,
 } from "lucide-react";
 import { AgentConfig } from "@/lib/agents/registry";
-import type { CallRecord } from "@/lib/history";
+import type { CallRecord, CallUsage } from "@/lib/history";
+import { calculateCost, formatCost } from "@/lib/pricing";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -143,7 +144,10 @@ function applyFilters(
       const q = filters.search.toLowerCase();
       const agentName =
         agents.find((a) => a.key === r.agentKey)?.name.toLowerCase() ?? "";
-      if (!r.phoneNumber.toLowerCase().includes(q) && !agentName.includes(q))
+      if (
+        !(r.phoneNumber ?? "").toLowerCase().includes(q) &&
+        !agentName.includes(q)
+      )
         return false;
     }
     if (filters.agentKey && r.agentKey !== filters.agentKey) return false;
@@ -203,6 +207,25 @@ function persistSavedViews(views: SavedView[]) {
 
 function filtersEqual(a: FilterState, b: FilterState) {
   return JSON.stringify(a) === JSON.stringify(b);
+}
+
+// ── Cost helpers ──────────────────────────────────────────────────────────────
+
+function usageCost(usage: CallUsage) {
+  return calculateCost({
+    llmProvider: "",
+    llmModel: usage.llmModel,
+    inputTokens: usage.inputTokens,
+    outputTokens: usage.outputTokens,
+    sttProvider: "",
+    sttModel: usage.sttModel,
+    sttAudioMs: usage.sttAudioMs,
+    ttsProvider: "",
+    ttsModel: usage.ttsModel,
+    ttsCharacters: usage.ttsCharacters,
+    ttsAudioMs: usage.ttsAudioMs,
+    callDurationMs: usage.callDurationMs,
+  });
 }
 
 // ── OutcomeBadge ──────────────────────────────────────────────────────────────
@@ -353,7 +376,11 @@ function CallSlideOver({
         <div className="flex items-start justify-between px-5 py-4 border-b border-border shrink-0">
           <div>
             <p className="text-base font-semibold text-foreground font-mono tracking-wide">
-              {record.phoneNumber}
+              {record.isPlayground
+                ? record.testType === "phoneCall" && record.testNumber
+                  ? `Playground · ${record.testNumber}`
+                  : "Playground"
+                : (record.phoneNumber ?? "—")}
             </p>
             <p className="text-xs text-muted-foreground mt-0.5">
               {agent?.name ?? record.agentKey} · {formatTime(record.startTime)}
@@ -433,7 +460,14 @@ function CallSlideOver({
 
               <div className="grid grid-cols-2 gap-4">
                 {[
-                  { label: "Phone number", value: record.phoneNumber },
+                  {
+                    label: "Phone number",
+                    value: record.isPlayground
+                      ? record.testType === "phoneCall" && record.testNumber
+                        ? `Playground · ${record.testNumber}`
+                        : "Playground"
+                      : (record.phoneNumber ?? "—"),
+                  },
                   { label: "Agent", value: agent?.name ?? record.agentKey },
                   {
                     label: "Direction",
@@ -459,6 +493,80 @@ function CallSlideOver({
                   </div>
                 ))}
               </div>
+
+              {record.usage &&
+                (() => {
+                  const cost = usageCost(record.usage);
+                  return (
+                    <div>
+                      <p className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground mb-2">
+                        Usage &amp; estimated cost
+                      </p>
+                      <div className="rounded-xl border border-border overflow-hidden text-xs">
+                        {/* LLM */}
+                        <div className="flex items-center justify-between px-3 py-2 border-b border-border">
+                          <div>
+                            <span className="font-medium text-foreground">
+                              LLM
+                            </span>
+                            <span className="ml-2 text-muted-foreground">
+                              {record.usage.inputTokens.toLocaleString()} in ·{" "}
+                              {record.usage.outputTokens.toLocaleString()} out
+                              tokens
+                            </span>
+                          </div>
+                          <span className="font-medium text-foreground tabular-nums">
+                            {formatCost(cost.llm.total)}
+                          </span>
+                        </div>
+                        {/* STT */}
+                        <div className="flex items-center justify-between px-3 py-2 border-b border-border">
+                          <div>
+                            <span className="font-medium text-foreground">
+                              STT
+                            </span>
+                            <span className="ml-2 text-muted-foreground">
+                              {(record.usage.sttAudioMs / 60000).toFixed(2)} min
+                              audio
+                            </span>
+                          </div>
+                          <span className="font-medium text-foreground tabular-nums">
+                            {formatCost(cost.stt.total)}
+                          </span>
+                        </div>
+                        {/* TTS */}
+                        <div className="flex items-center justify-between px-3 py-2 border-b border-border">
+                          <div>
+                            <span className="font-medium text-foreground">
+                              TTS
+                            </span>
+                            <span className="ml-2 text-muted-foreground">
+                              {record.usage.ttsCharacters.toLocaleString()}{" "}
+                              chars
+                            </span>
+                          </div>
+                          <span className="font-medium text-foreground tabular-nums">
+                            {formatCost(cost.tts.total)}
+                          </span>
+                        </div>
+                        {/* Total */}
+                        <div className="flex items-center justify-between px-3 py-2 bg-muted/30">
+                          <div className="flex items-center gap-3">
+                            <span className="font-semibold text-foreground">
+                              Total
+                            </span>
+                            <span className="text-muted-foreground">
+                              {formatCost(cost.perMinute)}/min
+                            </span>
+                          </div>
+                          <span className="font-bold text-foreground tabular-nums">
+                            {formatCost(cost.total)}
+                          </span>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })()}
 
               {record.tags && record.tags.length > 0 && (
                 <div>
@@ -668,8 +776,8 @@ export function CallHistoryClient({ agents }: { agents: AgentConfig[] }) {
         av = agents.find((ag) => ag.key === a.agentKey)?.name ?? a.agentKey;
         bv = agents.find((ag) => ag.key === b.agentKey)?.name ?? b.agentKey;
       } else if (sortCol === "phoneNumber") {
-        av = a.phoneNumber;
-        bv = b.phoneNumber;
+        av = a.phoneNumber ?? "";
+        bv = b.phoneNumber ?? "";
       } else if (sortCol === "outcome") {
         av = deriveOutcome(a);
         bv = deriveOutcome(b);
@@ -1116,9 +1224,15 @@ export function CallHistoryClient({ agents }: { agents: AgentConfig[] }) {
                         ) : (
                           <PhoneOutgoing className="size-3.5 text-success shrink-0" />
                         )}
-                        <span className="text-sm font-mono font-medium text-foreground truncate">
-                          {record.phoneNumber}
-                        </span>
+                        {record.isPlayground ? (
+                          <span className="text-sm font-medium text-primary truncate">
+                            Playground
+                          </span>
+                        ) : (
+                          <span className="text-sm font-mono font-medium text-foreground truncate">
+                            {record.phoneNumber ?? "—"}
+                          </span>
+                        )}
                       </div>
                       <OutcomeBadge outcome={outcome} />
                     </div>
@@ -1171,6 +1285,10 @@ export function CallHistoryClient({ agents }: { agents: AgentConfig[] }) {
                     <SortTh col="duration" label="Duration" />
                     <SortTh col="outcome" label="Outcome" />
                     <SortTh col="sentiment" label="Sentiment" />
+                    <th className={thCls}>LLM</th>
+                    <th className={thCls}>Tokens</th>
+                    <th className={thCls}>TTS</th>
+                    <th className={thCls}>Cost</th>
                     <th className={thCls}>Actions</th>
                   </tr>
                 </thead>
@@ -1228,11 +1346,22 @@ export function CallHistoryClient({ agents }: { agents: AgentConfig[] }) {
                           </p>
                         </td>
 
-                        {/* Phone */}
+                        {/* Caller / Recipient */}
                         <td className="px-3 py-3">
-                          <p className="text-xs font-mono text-foreground">
-                            {record.phoneNumber}
-                          </p>
+                          {record.isPlayground ? (
+                            <div>
+                              <p className="text-xs font-medium text-primary">
+                                Playground
+                              </p>
+                              <p className="text-[10px] font-mono text-muted-foreground mt-0.5">
+                                {record.testNumber ?? "Widget"}
+                              </p>
+                            </div>
+                          ) : (
+                            <p className="text-xs font-mono text-foreground">
+                              {record.phoneNumber ?? "—"}
+                            </p>
+                          )}
                         </td>
 
                         {/* Direction */}
@@ -1263,6 +1392,62 @@ export function CallHistoryClient({ agents }: { agents: AgentConfig[] }) {
                             score={record.sentimentScore}
                             showScore={false}
                           />
+                        </td>
+
+                        {/* LLM */}
+                        <td className="px-3 py-3 max-w-[130px]">
+                          <span
+                            className="text-xs text-foreground font-mono block truncate"
+                            title={record.usage?.llmModel}
+                          >
+                            {record.usage?.llmModel ?? "—"}
+                          </span>
+                        </td>
+
+                        {/* Tokens (in / out) */}
+                        <td className="px-3 py-3">
+                          {record.usage ? (
+                            <div className="flex flex-col gap-0.5">
+                              <span className="text-xs text-foreground tabular-nums whitespace-nowrap">
+                                {record.usage.inputTokens.toLocaleString()} in
+                              </span>
+                              <span className="text-[10px] text-muted-foreground tabular-nums whitespace-nowrap">
+                                {record.usage.outputTokens.toLocaleString()} out
+                              </span>
+                            </div>
+                          ) : (
+                            <span className="text-xs text-muted-foreground">
+                              —
+                            </span>
+                          )}
+                        </td>
+
+                        {/* TTS chars */}
+                        <td className="px-3 py-3">
+                          <span className="text-xs text-foreground tabular-nums">
+                            {record.usage
+                              ? record.usage.ttsCharacters.toLocaleString()
+                              : "—"}
+                          </span>
+                        </td>
+
+                        {/* Cost */}
+                        <td className="px-3 py-3">
+                          {record.usage ? (
+                            <div className="flex flex-col gap-0.5">
+                              <span className="text-xs font-semibold text-foreground tabular-nums whitespace-nowrap">
+                                ~{formatCost(usageCost(record.usage).total)}
+                              </span>
+                              <span className="text-[10px] text-muted-foreground tabular-nums whitespace-nowrap">
+                                {formatCost(usageCost(record.usage).perMinute)}
+                                /min
+                              </span>
+                            </div>
+                          ) : (
+                            <span className="text-xs text-muted-foreground">
+                              —
+                            </span>
+                          )}
                         </td>
 
                         {/* Quick actions */}

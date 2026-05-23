@@ -1,14 +1,38 @@
-import fs from "fs";
-import path from "path";
+import "server-only";
+import { getDb } from "@/lib/firebase/admin";
+import { FieldValue } from "firebase-admin/firestore";
 
-const HISTORY_FILE = path.join(process.cwd(), "call-history.json");
+const COLLECTION = "callHistory";
 
+export interface CallUsage {
+  llmModel: string;
+  inputTokens: number;
+  outputTokens: number;
+  sttModel: string;
+  sttAudioMs: number;
+  ttsModel: string;
+  ttsCharacters: number;
+  ttsAudioMs: number;
+  callDurationMs: number;
+}
+
+// `id` = Firestore auto-generated doc ID. It is NOT stored as a field inside
+// the document — it is always reconstructed from d.id on read.
+// `roomName` = LiveKit room name, stored as a field for webhook lookups.
 export interface CallRecord {
   id: string;
+  roomName: string;
   agentKey: string;
-  phoneNumber: string;
+  agentId?: string;
+  userId?: string;
+  phoneNumber?: string;
+  isPlayground?: boolean;
+  testType?: "widget" | "phoneCall";
+  testNumber?: string;
   startTime: number;
   endTime?: number;
+  callStartedAt?: number;
+  callEndedAt?: number;
   duration?: number;
   status: "completed" | "missed" | "in-progress";
   direction?: "inbound" | "outbound";
@@ -18,40 +42,78 @@ export interface CallRecord {
   transcript?: string;
   tags?: string[];
   archived?: boolean;
+  usage?: CallUsage;
 }
 
-export function getCallHistory(): CallRecord[] {
-  try {
-    if (!fs.existsSync(HISTORY_FILE)) {
-      return [];
-    }
-    const data = fs.readFileSync(HISTORY_FILE, "utf-8");
-    return JSON.parse(data);
-  } catch (error) {
-    console.error("Error reading call history:", error);
-    return [];
+function toFirestore(
+  record: Partial<CallRecord>,
+): Omit<Partial<CallRecord>, "id"> {
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  const { id: _id, ...rest } = record as CallRecord;
+  return rest;
+}
+
+const col = () => getDb().collection(COLLECTION);
+
+export async function getCallHistory(): Promise<CallRecord[]> {
+  const snap = await col().orderBy("startTime", "desc").limit(1000).get();
+  return snap.docs.map((d) => ({ id: d.id, ...d.data() }) as CallRecord);
+}
+
+// Lookup by roomName field (used by webhook handlers).
+export async function getCallRecord(
+  roomName: string,
+): Promise<CallRecord | null> {
+  const snap = await col().where("roomName", "==", roomName).limit(1).get();
+  if (snap.empty) return null;
+  return { id: snap.docs[0].id, ...snap.docs[0].data() } as CallRecord;
+}
+
+export async function getAgentCallHistory(
+  agentKey: string,
+): Promise<CallRecord[]> {
+  const snap = await col()
+    .where("agentKey", "==", agentKey)
+    .orderBy("startTime", "desc")
+    .limit(50)
+    .get();
+  return snap.docs.map((d) => ({ id: d.id, ...d.data() }) as CallRecord);
+}
+
+// Firestore generates the doc ID. `record.id` is NOT stored; `roomName` is.
+export async function addCallRecord(record: CallRecord): Promise<void> {
+  await col().add({
+    ...toFirestore(record),
+    agentId: record.agentKey,
+    createdAt: FieldValue.serverTimestamp(),
+  });
+}
+
+// Update by roomName field (webhook path).
+export async function updateCallRecord(
+  roomName: string,
+  updates: Partial<CallRecord>,
+): Promise<void> {
+  const snap = await col().where("roomName", "==", roomName).limit(1).get();
+  if (snap.empty) {
+    console.warn(
+      `[history] updateCallRecord: no doc with roomName=${roomName}`,
+    );
+    return;
   }
+  await snap.docs[0].ref.update(toFirestore(updates));
 }
 
-export function getAgentCallHistory(agentKey: string): CallRecord[] {
-  const history = getCallHistory();
-  return history
-    .filter((record) => record.agentKey === agentKey)
-    .sort((a, b) => b.startTime - a.startTime)
-    .slice(0, 50);
-}
-
-export function addCallRecord(record: CallRecord) {
-  const history = getCallHistory();
-  history.push(record);
-  fs.writeFileSync(HISTORY_FILE, JSON.stringify(history, null, 2));
-}
-
-export function updateCallRecord(id: string, updates: Partial<CallRecord>) {
-  const history = getCallHistory();
-  const index = history.findIndex((r) => r.id === id);
-  if (index !== -1) {
-    history[index] = { ...history[index], ...updates };
-    fs.writeFileSync(HISTORY_FILE, JSON.stringify(history, null, 2));
+// Update by Firestore doc ID (UI bulk-archive path).
+export async function updateCallRecordById(
+  docId: string,
+  updates: Partial<CallRecord>,
+): Promise<void> {
+  const ref = col().doc(docId);
+  const snap = await ref.get();
+  if (!snap.exists) {
+    console.warn(`[history] updateCallRecordById: doc ${docId} not found`);
+    return;
   }
+  await ref.update(toFirestore(updates));
 }

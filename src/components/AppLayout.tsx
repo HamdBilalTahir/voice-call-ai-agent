@@ -37,7 +37,7 @@ export function AppLayout({ agents, children }: AppLayoutProps) {
           />
 
           <main className="flex-1 overflow-y-auto">
-            <div className="max-w-7xl mx-auto px-4 sm:px-6 py-5 sm:py-8 pb-24 lg:pb-8">
+            <div className="max-w-[1600px] mx-auto px-4 sm:px-6 py-5 sm:py-8 pb-24 lg:pb-8">
               {children}
             </div>
           </main>
