@@ -164,9 +164,9 @@ function RecentActivityPanel({
             );
           })}
 
-          {callHistory.slice(0, 8).map((record) => (
+          {callHistory.slice(0, 8).map((record, i) => (
             <div
-              key={record.id}
+              key={record.id || record.roomName || i}
               className="flex items-center justify-between px-4 py-3"
             >
               <div className="min-w-0">
@@ -258,8 +258,66 @@ export function AgentClient({ agentData, agentKey }: AgentClientProps) {
   const [now, setNow] = useState(() => Date.now());
   const [isEditingName, setIsEditingName] = useState(false);
   const [editedName, setEditedName] = useState(agentData.name);
+  const [isEditingDescription, setIsEditingDescription] = useState(false);
+  const [editedDescription, setEditedDescription] = useState(
+    agentData.description ?? "",
+  );
   const [showGoLiveModal, setShowGoLiveModal] = useState(false);
   const nameInputRef = useRef<HTMLInputElement>(null);
+  const descriptionInputRef = useRef<HTMLTextAreaElement>(null);
+
+  const saveName = useCallback(async () => {
+    const trimmed = editedName.trim();
+    if (!trimmed || trimmed === agentData.name) {
+      setIsEditingName(false);
+      return;
+    }
+    setIsEditingName(false);
+    try {
+      await fetch(`/api/agents/${agentKey}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          payload: { name: trimmed },
+          updatedBy: "system",
+          updatedByName: "App User",
+        }),
+      });
+    } catch {
+      setEditedName(agentData.name);
+      toast({
+        message: "Failed to save name — please try again.",
+        variant: "error",
+      });
+    }
+  }, [editedName, agentData.name, agentKey, toast]);
+
+  const saveDescription = useCallback(async () => {
+    const trimmed = editedDescription.trim();
+    setIsEditingDescription(false);
+    if (trimmed === (agentData.description ?? "")) return;
+    // Keep the optimistic value visible while the request is in flight
+    setEditedDescription(trimmed);
+    try {
+      const res = await fetch(`/api/agents/${agentKey}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          payload: { description: trimmed },
+          updatedBy: "system",
+          updatedByName: "App User",
+        }),
+      });
+      if (!res.ok) throw new Error("Save failed");
+      router.refresh();
+    } catch {
+      setEditedDescription(agentData.description ?? "");
+      toast({
+        message: "Failed to save description — please try again.",
+        variant: "error",
+      });
+    }
+  }, [editedDescription, agentData.description, agentKey, toast, router]);
 
   useEffect(() => {
     const id = setInterval(() => setNow(Date.now()), 1000);
@@ -269,6 +327,15 @@ export function AgentClient({ agentData, agentKey }: AgentClientProps) {
   useEffect(() => {
     if (isEditingName) nameInputRef.current?.focus();
   }, [isEditingName]);
+
+  // Keep editedName/editedDescription in sync when server delivers fresh agentData
+  useEffect(() => {
+    if (!isEditingName) setEditedName(agentData.name);
+  }, [agentData.name, isEditingName]);
+
+  useEffect(() => {
+    setEditedDescription(agentData.description ?? "");
+  }, [agentData.description]);
 
   const activeTab = searchParams.get("tab") ?? "job-description";
 
@@ -372,10 +439,13 @@ export function AgentClient({ agentData, agentKey }: AgentClientProps) {
                 ref={nameInputRef}
                 value={editedName}
                 onChange={(e) => setEditedName(e.target.value)}
-                onBlur={() => setIsEditingName(false)}
+                onBlur={saveName}
                 onKeyDown={(e) => {
-                  if (e.key === "Enter" || e.key === "Escape")
+                  if (e.key === "Enter") saveName();
+                  if (e.key === "Escape") {
+                    setEditedName(agentData.name);
                     setIsEditingName(false);
+                  }
                 }}
                 className="text-[26px] font-semibold text-foreground tracking-tight bg-transparent border-b-2 border-primary outline-none w-full pb-0.5"
               />
@@ -390,9 +460,41 @@ export function AgentClient({ agentData, agentKey }: AgentClientProps) {
                 <Pencil className="size-4 text-muted-foreground opacity-0 group-hover:opacity-100 transition-opacity shrink-0" />
               </button>
             )}
-            <p className="text-sm text-muted-foreground mt-1">
-              {agentData.description}
-            </p>
+            {isEditingDescription ? (
+              <textarea
+                ref={descriptionInputRef}
+                value={editedDescription}
+                onChange={(e) => setEditedDescription(e.target.value)}
+                onBlur={saveDescription}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && !e.shiftKey) {
+                    e.preventDefault();
+                    saveDescription();
+                  }
+                  if (e.key === "Escape") {
+                    setEditedDescription(agentData.description ?? "");
+                    setIsEditingDescription(false);
+                  }
+                }}
+                rows={1}
+                className="text-sm text-foreground bg-transparent border-b border-primary outline-none w-full mt-1 resize-none leading-snug"
+              />
+            ) : (
+              <button
+                onClick={() => {
+                  setIsEditingDescription(true);
+                  setTimeout(() => descriptionInputRef.current?.focus(), 0);
+                }}
+                className="group flex items-center gap-1.5 text-left mt-1"
+              >
+                <p className="text-sm text-muted-foreground">
+                  {editedDescription || (
+                    <span className="italic">Add a description…</span>
+                  )}
+                </p>
+                <Pencil className="size-3 text-muted-foreground opacity-0 group-hover:opacity-100 transition-opacity shrink-0" />
+              </button>
+            )}
             <div className="flex items-center gap-2 mt-3 flex-wrap">
               <Badge variant="secondary" className="gap-1.5">
                 {agentData.direction === "inbound" ? (

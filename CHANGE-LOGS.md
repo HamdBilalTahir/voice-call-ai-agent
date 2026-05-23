@@ -1,3 +1,249 @@
+## 🗓️ **2026-05-24**
+
+---
+
+### 🏗️ Architecture
+
+---
+
+> ### Generic Agent Entry — All Config Driven from Firestore via Dispatch Metadata
+>
+> - **What changed:** Extracted all shared agent logic into `src/lib/agents/genericEntry.ts`, which exports a `makeAgentEntry(defaults)` factory. The factory accepts compiled static defaults (`systemPrompt`, `greeting`, `llmModel`, `ttsModel`, `ttsVoiceId`, `sttModel`, `sttLanguage`, `workerName`) and returns a `defineAgent` entry. At runtime the entry reads every field from the LiveKit dispatch metadata first and only falls back to the compiled defaults when a field is absent. The metadata is now the single source of truth for all runtime config — not `config.ts`. Added `buildDispatchMetadata(agentData, extra?)` to `promptBuilder.ts`: it takes a Firestore `AgentFullData` doc and serialises the full voice settings (`llmModel`, `ttsModel`, `ttsVoiceId`, `sttModel`, `sttLanguage`) alongside `systemPrompt` and `voiceGreeting` into a single JSON string. All three dispatch routes now call this helper: `POST /api/calls/test`, `POST /api/calls/inbound`, and `POST /api/calls/outbound`. The outbound route was previously dispatching with no metadata and a hardcoded `"voice-agent"` dispatch rule — it now reads the agent doc from Firestore to get both the correct `dispatchRuleName` and the full voice settings. Both `restaurant-es/agent.ts` and `sales-en/agent.ts` were reduced to ~10 lines each: they pass their compiled `config.ts` values as defaults to `makeAgentEntry` and keep only the CLI entrypoint. All agent logic (STT/LLM/TTS construction, session wiring, greeting, usage file write) now lives exclusively in `genericEntry.ts`. Usage recording writes the `llmModel` that was actually used (from metadata or fallback), not the hardcoded constant.
+> - **Why:** Both agent workers were identical except for their default config values. Any new per-agent setting (new model, STT language override, different voice) previously required editing code; now it's a Firestore field change. Dynamic agents already lived entirely as Firestore docs — the static template agents now follow the same pattern at runtime.
+> - **Files:**
+>   - `src/lib/agents/genericEntry.ts` _(new — shared factory for all agent workers)_
+>   - `src/lib/agents/promptBuilder.ts` _(buildDispatchMetadata added; AgentFullData import)_
+>   - `src/lib/agents/inbound/restaurant-es/agent.ts` _(reduced to makeAgentEntry call + CLI)_
+>   - `src/lib/agents/outbound/sales-en/agent.ts` _(reduced to makeAgentEntry call + CLI)_
+>   - `src/app/api/calls/test/route.ts` _(buildDispatchMetadata replacing inline metadata build)_
+>   - `src/app/api/calls/inbound/route.ts` _(buildDispatchMetadata replacing inline metadata build)_
+>   - `src/app/api/calls/outbound/route.ts` _(Firestore lookup + buildDispatchMetadata; correct dispatchRuleName per agent)_
+
+---
+
+> ### Call History — Consolidate Token Columns + Wider Table Container
+>
+> - **What changed:** Reduced the Call History table from 15 columns to 12. The three separate "Tokens In", "Tokens Out", "Total Tokens" columns were replaced by a single **Tokens** column displaying a stacked `in / out` two-line cell. The "Est. Cost" and "TTS Chars" column headers were shortened to **Cost** and **TTS** respectively. The LLM column now has `max-w-[130px]` with `truncate` and a `title` tooltip so long model names (e.g. `gemini-3-flash-preview`) don't push other columns off screen. The global content container was widened from `max-w-7xl` (1280 px) to `max-w-[1600px]` so the table uses more of the available viewport on larger monitors.
+> - **Why:** With the new LLM column the table overflowed its container — model name strings are 20+ characters in monospace. Consolidating the three redundant token columns recovers the needed space without losing any meaningful information.
+> - **Files:**
+>   - `src/components/CallHistoryClient.tsx` _(columns consolidated, LLM truncation)_
+>   - `src/components/AppLayout.tsx` _(max-w-[1600px])_
+
+---
+
+### ✨ Features
+
+---
+
+> ### WelcomeModal — Description Field + Full 5-Prompt-Section Creation Flow
+>
+> - **What changed:** Step 1 of the agent-creation modal now includes an optional **Description** text input between the agent name and the purpose picker. The description is sent to `POST /api/agents` and stored in Firestore as the `description` field on the new agent document. Step 3 was updated to surface all five prompt fields: **What it does**, **How it talks**, **What to avoid**, **Anything else**, and **Opening line** — matching the structure of the Instructions tab. All five fields are stored on creation via `roleAndResponsibilities`, `personaLanguageAndTone`, `mistakesToAvoid`, `additionalInstructions`, and `voiceGreeting` respectively. All state is reset when the modal is reopened.
+> - **Why:** The creation flow previously only accepted a role/responsibilities field and left the other four sections blank, requiring the user to navigate to the Instructions tab after creation to complete setup. Surfacing all five fields up front collapses two steps into one.
+> - **Files:**
+>   - `src/components/WelcomeModal.tsx`
+>   - `src/app/api/agents/route.ts`
+
+---
+
+> ### Agent Description — Inline Editing with Pencil Icon
+>
+> - **What changed:** The agent description subtitle in the agent page header now has an inline edit affordance. A pencil icon (Pencil2 from lucide) appears on hover next to the description text; clicking it (or the text itself) switches the subtitle to a single-row auto-focused textarea. **Enter** or **blur** saves via `PATCH /api/agents/[agentKey]`; **Escape** cancels. Save is optimistic — the UI updates immediately before the async write completes. `router.refresh()` is called after a successful save to sync server-side props. On failure the value reverts and a toast is shown. The `useEffect` that syncs `editedDescription` from server props only depends on `agentData.description` (not on `isEditingDescription`), so in-progress edits are never overwritten by a concurrent refresh.
+> - **Why:** Agent descriptions help operators distinguish deployments at a glance; requiring a developer-side Firestore edit to change a one-line subtitle is unnecessary friction.
+> - **Files:**
+>   - `src/components/AgentClient.tsx`
+
+---
+
+> ### Call History — testNumber Field + Playground Caller/Recipient Display
+>
+> - **What changed:** Added `testNumber?: string` to `CallRecord` in `history.ts`. The outbound-call route (`POST /api/calls/outbound`) now stores `testNumber: toNumber` on the call record when `isPlayground && testType === "phoneCall"`. In the Call History table the **Caller / Recipient** cell now shows **"Playground"** (primary text in brand blue) with a secondary sub-line: the `testNumber` if it was a phone test, or **"Widget"** for browser-mic tests. This replaces the old phone-number display for playground calls. The slide-over header and Overview panel follow the same pattern.
+> - **Why:** Playground calls show up in Call History alongside live calls; operators need to distinguish them at a glance and, for phone tests, know which number was called.
+> - **Files:**
+>   - `src/lib/history.ts` _(testNumber added to CallRecord)_
+>   - `src/app/api/calls/outbound/route.ts` _(stores testNumber)_
+>   - `src/components/CallHistoryClient.tsx` _(Caller/Recipient cell + slide-over header)_
+
+---
+
+> ### Call History — LLM Model Column + Agent Name from Firestore
+>
+> - **What changed:** Added a new **LLM** column to the Call History table (between Sentiment and Tokens In) showing `record.usage.llmModel` in monospace, or `—` when usage data is absent. The `calls/page.tsx` route was changed from `Object.values(staticRegistry)` to `await listAgents()` so that all agents — static and dynamically created — are available for name and direction lookups. This fixes the agent column falling back to showing the raw Firestore doc ID for dynamic agents, and fixes the direction showing as "Outbound" for inbound dynamic agents.
+> - **Why:** Knowing which LLM model was used per call is the primary lever for understanding cost and latency variance. The agent-name fix was a regression from the Firestore doc-ID migration — dynamic agents were simply absent from the static registry.
+> - **Files:**
+>   - `src/app/calls/page.tsx` _(listAgents() replacing static registry)_
+>   - `src/components/CallHistoryClient.tsx` _(LLM column header + cell)_
+
+---
+
+### 🗄️ Data & Infrastructure
+
+---
+
+> ### Agents — Firestore Auto-Generated Doc IDs + slug Field + Migration
+>
+> - **What changed:** Agent documents are now created with Firestore auto-generated document IDs (`col.add()`) rather than a pre-computed human-readable slug. The `key` field (= the auto-generated doc ID) and a `slug` field (= `slugify(name)`, human-readable) are both stored on the document. `createAgent()` in `agents.ts` was updated to use `col.add()`, then write `key: docRef.id` back in a second `update()` call, and returns `{ ok: true, key: string }`. `CreateAgentParams` was extended to include `personaLanguageAndTone`, `mistakesToAvoid`, and `voiceGreeting`. The `POST /api/agents` route no longer pre-generates a key — it reads `result.key` from `createAgent()`. A migration target `agentDocIds` was added to `migrateAgentDocIds()` in `migration.ts` and wired into `POST /api/agents/migrate`: it finds docs whose `isDynamic: true` and have no `key` field (old slug-keyed docs), creates a new doc via `col.add()`, copies all data with `slug` and `key` set, then deletes the old doc. The existing `sarah-layref-12ye` agent was migrated to `gZpvYpAgmk9WShjXqF8G`.
+> - **Why:** Using the agent name as the Firestore doc ID meant renaming an agent could break routing, and two agents with similar names could collide. Auto-generated IDs are stable, collision-free, and the Firestore convention.
+> - **Files:**
+>   - `src/lib/firebase/agents.ts` _(createAgent, CreateAgentParams)_
+>   - `src/lib/firebase/migration.ts` _(migrateAgentDocIds)_
+>   - `src/app/api/agents/migrate/route.ts` _(agentDocIds target)_
+>   - `src/app/api/agents/route.ts` _(key from result, not pre-generated)_
+
+---
+
+### 🐛 Fixes
+
+---
+
+> ### Dynamic Agents — Prompt Read/Write Pure Firestore (No Filesystem Fallback)
+>
+> - **What changed:** `GET /api/agents/[agentKey]/prompt` and `POST /api/agents/[agentKey]/prompt` were simplified to use `getAgent(agentKey)` exclusively. The GET handler previously had a static registry guard (`if (!agents[agentKey]) return 404`) followed by a filesystem read from the agent's `prompt.ts` file — both of which blocked dynamic agents with Firestore-only data. The POST had the same guard. Both are now removed; both handlers call `getAgent()` which handles static and dynamic agents uniformly. A 404 is returned only when `getAgent()` itself returns null.
+> - **Why:** Dynamic agents (created via the UI) have no `prompt.ts` on disk and are not in the static registry. The old handlers returned 404 for any dynamic agent, making the Instructions tab completely non-functional for them.
+> - **Files:**
+>   - `src/app/api/agents/[agentKey]/prompt/route.ts`
+
+---
+
+> ### updateAgentConfig — Dynamic Agent Support
+>
+> - **What changed:** Removed the static registry guard from `updateAgentConfig()` in `agents.ts`. The function previously returned `{ ok: false, error: "Agent not found" }` when `registryAgents[agentKey]` was undefined, which silently blocked all writes for dynamic agents. Firestore writes now proceed for any agent key; the document existence check relies on the Firestore write itself.
+> - **Why:** Dynamic agents are not in the static registry by design — the registry is only for agents deployed as code. Blocking writes on a missing registry entry meant the entire Instructions tab save path was broken for UI-created agents.
+> - **Files:**
+>   - `src/lib/firebase/agents.ts`
+
+---
+
+> ### Instructions Tab — Remove All Character Limits
+>
+> - **What changed:** Removed all `maxLength` values from the `SectionMeta` interface and all five entries in `SECTION_META` in `AIJobDescriptionTab.tsx`. Removed the `getCounterColor()` function. Removed the character counter display (`{sections[key].length} / {meta.maxLength}`) from the textarea footer. Removed the `for…of` validation loop that blocked saves when a field exceeded its limit. Correspondingly removed all `.max()` constraints from the five prompt-field schemas in `AgentWriteSchema` in `agents.ts`.
+> - **Why:** Real-world agent prompts for complex workflows easily exceed the previous 4,000-character limits. Artificial limits that block saves without a workaround destroy user trust.
+> - **Files:**
+>   - `src/components/AIJobDescriptionTab.tsx`
+>   - `src/lib/firebase/agents.ts`
+
+---
+
+> ### Agent Description Save — Optimistic Frontend Update
+>
+> - **What changed:** `saveDescription` in `AgentClient` now (1) sets `isEditingDescription(false)` and `setEditedDescription(trimmed)` optimistically before the async fetch, (2) calls `router.refresh()` after a successful `PATCH`, and (3) calls `res.ok` to detect server-side failures and reverts the optimistic value on error. The `useEffect` that syncs `editedDescription` from `agentData.description` was changed to only depend on `agentData.description` (previously it also depended on `isEditingDescription`), which prevented the stale dependency from resetting the field back to the old server value immediately after the optimistic update was applied.
+> - **Why:** Without the optimistic update and correct effect deps, a successful DB write would still show the old description until the user manually refreshed the page.
+> - **Files:**
+>   - `src/components/AgentClient.tsx`
+
+---
+
+### 🗄️ Data & Infrastructure
+
+---
+
+> ### callHistory — Schema Overhaul: Auto-IDs, roomName FK, Playground Flags, LiveKit Timestamps
+>
+> - **What changed:** The `callHistory` Firestore collection was fully restructured. **Document IDs** are now Firestore auto-generated (no longer the roomName string). The `id` field is no longer stored inside the document — it is reconstructed from `d.id` on every read. **`roomName`** is stored as an explicit field and is the key used by webhook handlers to locate and update documents (queried via `where("roomName", "==", roomName)`). **`agentId`** mirrors `agentKey` as an explicit foreign key. **`isPlayground: boolean`** marks whether the call was initiated from the Playground or from a real channel. **`testType: "widget" | "phoneCall"`** is set when `isPlayground` is true — `"widget"` for browser mic tests via LiveKit, `"phoneCall"` for playground phone-call tests using SIP. **`callStartedAt`** and **`callEndedAt`** store the LiveKit-sourced timestamps: `callStartedAt` is derived from `json.room.creation_time * 1000` on the `room_started` webhook event; `callEndedAt` is set when `room_finished` fires. **`phoneNumber`** and **`userId`** are optional. `history.ts` was rewritten to match: `addCallRecord` uses `col.add()`, `getCallRecord` and `updateCallRecord` query by `roomName` field, and a new `updateCallRecordById(docId, ...)` handles direct doc-ID updates for the bulk-archive UI path. The `toFirestore()` helper always strips `id` before any write. **Outbound call route** (`POST /api/calls/outbound`) now accepts `isPlayground` and `testType` from the request body and stores them on the record. **`/api/calls/test`** (browser widget) creates a call record with `isPlayground: true, testType: "widget"`. **Playground** (`PlaygroundClient`) passes `isPlayground: true, testType: "phoneCall"` when initiating a phone test from the Playground phone panel. **Webhook** (`POST /api/agent`) now handles `room_started` to write `callStartedAt`, and writes both `callStartedAt` and `callEndedAt` on `room_finished`. **Migrations:** new `normalizeCallHistoryDocs()` uses a Firestore batch to set `roomName`, `isPlayground`, `testType`, and delete the redundant `id` field on all existing docs; `backfillPlaygroundFields()` adds `isPlayground: false` to docs that are missing it; `migrateCallHistoryJson()` updated to use `col.add()` and check by `id` field to avoid duplicates. `POST /api/agents/migrate` extended to support `target: "normalizeCallHistory" | "backfillPlayground"`. Both existing call records were normalised: `isPlayground: true, testType: "widget"`.
+> - **Why:** The old schema used the roomName as the Firestore doc ID and stored it redundantly as a field. Auto-generated IDs are the Firestore convention and decouple the storage key from the business identifier. `roomName` as a queryable field keeps webhook lookups clean. `isPlayground` and `testType` are the foundation for separating real-call metrics from test noise in dashboards and reporting. LiveKit timestamps (`callStartedAt`/`callEndedAt`) are more accurate than the wall-clock times recorded by our API layer.
+> - **Files:**
+>   - `src/lib/history.ts` _(complete rewrite — auto-IDs, roomName field, isPlayground/testType, callStartedAt/callEndedAt, toFirestore helper, updateCallRecordById)_
+>   - `src/lib/firebase/migration.ts` _(normalizeCallHistoryDocs, backfillPlaygroundFields, migrateCallHistoryJson updated)_
+>   - `src/app/api/agents/migrate/route.ts` _(normalizeCallHistory + backfillPlayground targets)_
+>   - `src/app/api/agent/route.ts` _(room_started handler, callStartedAt/callEndedAt on room_finished)_
+>   - `src/app/api/calls/outbound/route.ts` _(isPlayground + testType from request body)_
+>   - `src/app/api/calls/test/route.ts` _(creates call record with isPlayground: true, testType: "widget")_
+>   - `src/app/api/history/route.ts` _(PATCH uses updateCallRecordById for bulk archive)_
+>   - `src/components/PlaygroundClient.tsx` _(passes isPlayground: true, testType: "phoneCall" on phone test)_
+
+---
+
+### 🐛 Fixes
+
+---
+
+> ### Agent Page Title Not Refreshing After Sidebar Rename
+>
+> - **What changed:** `AgentClient` now syncs `editedName` state with `agentData.name` via a `useEffect` whenever new props arrive from the server. The effect is guarded by `!isEditingName` so an in-progress inline edit is never overwritten. Previously, `editedName` was only initialised once from `agentData.name` via `useState`, so `router.refresh()` (called by the sidebar after saving a rename) delivered new props but the displayed title stayed stale.
+> - **Why:** Renaming from the sidebar updated the sidebar immediately (optimistic local state) but the agent page heading kept showing the old name until a full page reload.
+> - **Files:**
+>   - `src/components/AgentClient.tsx`
+
+---
+
+> ### RecentActivityPanel — Missing React Key on Call History Items
+>
+> - **What changed:** The `callHistory.slice(0, 8).map()` in `RecentActivityPanel` now uses `record.id || record.roomName || i` as the `key` prop. The schema change that moved from roomName-as-docID to Firestore auto-IDs meant `record.id` could momentarily be undefined for docs that hadn't been normalised yet, triggering the React "each child in a list should have a unique key" warning.
+> - **Why:** Missing keys cause React to produce console errors and can lead to incorrect reconciliation behaviour during re-renders.
+> - **Files:**
+>   - `src/components/AgentClient.tsx`
+
+---
+
+> ### Dynamic Agent Creation — Onboarding Modal End-to-End
+>
+> - **What changed:** Rewrote `WelcomeModal` from a fake 3-step stub into a fully functional agent creation flow. **Step 1:** Agent name text input + purpose picker (Answer calls / Make calls / Both) — Continue is blocked until both are filled. **Step 2:** Industry grid (Restaurant / Clinic / Agency / Other). **Step 3:** Language picker + Role & responsibilities textarea for all industries; if industry is "Other", an additional Initial instructions textarea appears. Submitting calls `POST /api/agents` which was added as a new handler: it slugifies the name + appends a short timestamp suffix to generate a unique `agentKey`, maps `purpose → direction`, maps language code to locale string (en-US, es-ES, fr-FR), resolves the correct LiveKit dispatch rule from env vars, and calls `createAgent()`. New `createAgent()` function in `src/lib/firebase/agents.ts` writes a complete Firestore document (`isDynamic: true`, `name`, `direction`, `language`, `industry`, `dispatchRuleName`, plus the role as `roleAndResponsibilities`). The "done" step navigates to `/playground?agent={newAgentKey}`. The modal fully resets when re-triggered via `open-welcome-modal` event. The "New agent" button in the sidebar was wired to dispatch that event (it was previously a dead button). **Dynamic agent routing:** `GET/POST /api/agents/process` now calls `resolveDirection(agentKey)` which checks the static registry first and falls back to Firestore for `isDynamic` agents. On start, dynamic agents reuse the nearest static template worker (`sales-en` for outbound, `restaurant-es` for inbound). `POST /api/calls/test` resolves `dispatchRuleName` from Firestore for dynamic agents and passes it to LiveKit dispatch. `src/app/playground/page.tsx` switched from the static registry to `await listAgents()` so dynamically created agents appear in the Playground picker.
+> - **Why:** The create-agent flow was a visual stub — clicking "Create" produced no actual agent. This change makes the onboarding moment real: a user can go from zero to a working, testable agent in under two minutes without touching Firebase or config files.
+> - **Files:**
+>   - `src/components/WelcomeModal.tsx` _(complete rewrite)_
+>   - `src/app/api/agents/route.ts` _(new POST handler)_
+>   - `src/lib/firebase/agents.ts` _(createAgent, listAgents extended to include isDynamic docs, getAgent extended for dynamic agents)_
+>   - `src/app/api/agents/process/route.ts` _(resolveDirection + templateWorkerKey for dynamic agents)_
+>   - `src/app/api/calls/test/route.ts` _(Firestore dispatchRuleName lookup for dynamic agents)_
+>   - `src/app/playground/page.tsx` _(switched to listAgents)_
+>   - `src/components/Sidebar.tsx` _(New agent button wired to open-welcome-modal event)_
+
+---
+
+> ### Call Usage Tracking & Cost Estimation
+>
+> - **What changed:** Added end-to-end usage capture and cost display for browser test calls. **Agent side:** both `sales-en` and `restaurant-es` workers write a `.agent-usage/{roomName}.json` file on `session.close` containing `{ type: "call_usage", llmModel, inputTokens, outputTokens, sttModel, sttAudioMs, ttsModel, ttsCharacters, ttsAudioMs, callDurationMs }`. The file approach replaces the previous `publishData` channel which was unreliable (LiveKit room closes before the agent publishes). **New API route** `GET /api/calls/[roomName]/usage` reads that file and returns the JSON, or 404 if not yet written. **Playground polling:** `WebTestPanel` stores the room name on connect; on disconnect it waits 2 s then polls the usage endpoint up to 5 times (1.5 s apart). `CostPanel` shows a skeleton while loading and renders the LLM/STT/TTS breakdown once usage arrives. `isCalculatingUsage` state in the parent prevents the panel from disappearing between calls. **Webhook:** `POST /api/agent` (LiveKit `room_finished` webhook) also reads the usage file on room close and persists it into the call record. **Pricing:** new `src/lib/pricing.ts` with `calculateCost()` and `formatCost()`. Model rate table covers Claude Haiku 4.5 ($0.80/$4.00 per 1M tokens), Claude Sonnet 4.6 ($3.00/$15.00), Grok grok-3-mini ($0.30/$0.50), Deepgram nova-3 ($0.0043/min), ElevenLabs Starter plan ($0.167/1k chars) with actual SDK model name keys (`eleven_turbo_v2_5`, `eleven_multilingual_v2`) for correct substring lookup.
+> - **Why:** LLM, STT, and TTS costs are the primary variable cost driver. Without per-call cost visibility operators have no way to understand their margins or spot runaway usage.
+> - **Files:**
+>   - `src/lib/pricing.ts` _(new)_
+>   - `src/app/api/calls/[roomName]/usage/route.ts` _(new)_
+>   - `src/lib/agents/outbound/sales-en/agent.ts` _(usage file write on session close)_
+>   - `src/lib/agents/inbound/restaurant-es/agent.ts` _(usage file write on session close)_
+>   - `src/components/PlaygroundClient.tsx` _(polling, CostPanel skeleton, isCalculatingUsage state)_
+>   - `src/app/api/agent/route.ts` _(usage file read + persist in call record on room_finished)_
+
+---
+
+> ### Call History — Token & Cost Columns
+>
+> - **What changed:** Added five new columns to the Call History table: **Tokens In**, **Tokens Out**, **Total Tokens**, **TTS Chars**, and **Est. Cost**. All are populated from the `usage` object stored on each call record (accurate usage data, estimated cost). The slide-over Overview tab gained a usage breakdown section with rows for LLM (input/output tokens, cost), STT (audio duration, cost), TTS (character count, cost), total estimated cost, and cost-per-minute. `usageCost()` adapter in `CallHistoryClient` bridges `CallUsage` fields to `calculateCost()` from the pricing module. Extended `CallRecord` interface with optional `usage?: CallUsage`.
+> - **Why:** Usage is accurate (it comes directly from the provider SDKs); cost is estimated but close enough for operators to track spend per call and catch anomalies without leaving the call history view.
+> - **Files:**
+>   - `src/components/CallHistoryClient.tsx`
+>   - `src/lib/history.ts` _(CallUsage interface + usage field on CallRecord)_
+
+---
+
+> ### Agent Name Editing — Agent Page & Sidebar
+>
+> - **What changed:** **Agent page:** clicking the agent name (or the pencil icon that appears on hover) switches the `<h1>` to an inline `<input>`. Enter or blur saves the new name via `PATCH /api/agents/[agentKey]`; Escape resets to the original. On save failure a toast is shown and the name reverts. **Sidebar:** each agent item gains a pencil button that appears on row hover. Clicking it opens an inline `<input>` directly in the sidebar (replacing the name span) — no navigation required. Enter or blur saves via the same PATCH endpoint; Escape cancels. On a successful save the sidebar reflects the new name optimistically via `nameOverrides` local state, and if the user is currently on that agent's detail page, `router.refresh()` is called to sync the page heading. The `"name"` field was added to `TIER1_WRITE_FIELDS` in `agents.ts` to allow it through the Firestore write allowlist.
+> - **Why:** Agent names are how operators distinguish between deployments. Forcing a developer roundtrip to rename an agent is friction that kills trust in the product.
+> - **Files:**
+>   - `src/components/AgentClient.tsx` _(saveName callback, pencil button, Enter/Escape/blur handlers)_
+>   - `src/components/Sidebar.tsx` _(inline rename input, nameOverrides state, router.refresh on page sync)_
+>   - `src/lib/firebase/agents.ts` _("name" added to TIER1_WRITE_FIELDS)_
+
+---
+
+### 🗄️ Data & Infrastructure
+
+---
+
+> ### Call History Migrated to Firestore `callHistory` Collection
+>
+> - **What changed:** Replaced the local `call-history.json` flat file with a Firestore `callHistory` collection. `src/lib/history.ts` was completely rewritten — all five functions (`getCallHistory`, `getCallRecord`, `getAgentCallHistory`, `addCallRecord`, `updateCallRecord`) are now async and operate against Firestore. Every new document gets three additional fields: `agentId` (mirrors `agentKey` — explicit foreign key for querying), `userId` (optional, ready for when auth is added), and `createdAt` (Firestore server timestamp). All callers updated: `agent/route.ts` uses the new `getCallRecord(id)` direct-fetch instead of loading all history then finding by ID; `calls/outbound/route.ts`, `history/route.ts`, and `dashboard/route.ts` all `await` their respective calls. `updateCallRecord` is a no-op with a warning log if the document doesn't exist (guards against race conditions on the webhook path). **Migration:** new `migrateCallHistoryJson()` function in `src/lib/firebase/migration.ts` reads `call-history.json` and batch-writes records to Firestore, skipping any that already exist. The migrate endpoint (`POST /api/agents/migrate`) was extended to accept `{ target: "callHistory" | "agents" | "all" }` in the body. The two existing records were migrated and `call-history.json` has been deleted from the repository.
+> - **Why:** A local JSON file breaks in any multi-instance or serverless deployment, is lost on a redeploy, and can't be queried. Firestore gives durable, queryable, per-tenant storage — a necessary foundation before adding user auth and multi-tenant data isolation.
+> - **Files:**
+>   - `src/lib/history.ts` _(complete rewrite — Firestore, async, agentId/userId/createdAt)_
+>   - `src/lib/firebase/migration.ts` _(migrateCallHistoryJson added)_
+>   - `src/app/api/agents/migrate/route.ts` _(extended to support target: "callHistory" | "all")_
+>   - `src/app/api/agent/route.ts` _(getCallRecord + await updateCallRecord)_
+>   - `src/app/api/calls/outbound/route.ts` _(await addCallRecord)_
+>   - `src/app/api/history/route.ts` _(all functions awaited)_
+>   - `src/app/api/dashboard/route.ts` _(await getCallHistory)_
+>   - `call-history.json` _(deleted — data migrated to Firestore)_
+
+---
+
 ## 🗓️ **2026-05-22**
 
 ---
@@ -26,6 +272,15 @@
 ---
 
 ### 🐛 Fixes
+
+---
+
+> ### Playground — Instructions Preview Shows Full Compiled Prompt
+>
+> - **What changed:** The collapsed instructions preview in the Playground left pane now renders each of the four prompt sections as a distinct labeled row (section name in small-caps muted text, content in a 2-line clamp below it, rows separated by dividers) instead of a flat text blob with raw `[BRACKETED HEADERS]`. Only non-empty sections are rendered. The "Edit in sandbox" toggle label was renamed to "Edit" and the page subtitle was updated from "Edits here are sandboxed" to "Changes you make here are saved immediately" — all sandbox terminology removed from user-facing copy.
+> - **Why:** The previous preview showed the raw `[ROLE AND RESPONSIBILITIES]\n…` concatenation directly, which was hard to scan and exposed implementation-level header syntax to users. The labeled-section layout makes it immediately clear which part of the prompt each block of text belongs to.
+> - **Files:**
+>   - `src/components/PlaygroundClient.tsx`
 
 ---
 

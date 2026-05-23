@@ -1,0 +1,1 @@
+{"type":"call_usage","llmModel":"gemini-3-flash-preview","inputTokens":17615,"outputTokens":210,"sttModel":"deepgram-nova-3","sttAudioMs":61500,"ttsModel":"eleven_turbo_v2_5","ttsCharacters":753,"ttsAudioMs":44586,"callDurationMs":185207}

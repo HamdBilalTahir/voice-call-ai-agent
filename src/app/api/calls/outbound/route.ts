@@ -2,6 +2,8 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { SipClient, AgentDispatchClient } from "livekit-server-sdk";
+import { getAgent } from "@/lib/firebase/agents";
+import { buildDispatchMetadata } from "@/lib/agents/promptBuilder";
 
 const sipClient = new SipClient(
   process.env.LIVEKIT_URL!,
@@ -22,6 +24,8 @@ const outboundCallSchema = z.object({
     .string()
     .regex(/^\+[1-9]\d{1,14}$/, "Must be a valid E.164 phone number"),
   agentKey: z.string().optional(),
+  isPlayground: z.boolean().optional(),
+  testType: z.enum(["widget", "phoneCall"]).optional(),
 });
 
 export async function POST(req: Request) {
@@ -46,7 +50,7 @@ export async function POST(req: Request) {
       );
     }
 
-    const { toNumber, agentKey } = parsed.data;
+    const { toNumber, agentKey, isPlayground, testType } = parsed.data;
 
     // 3. Verify env vars are set
     let sipTrunkId = process.env.LIVEKIT_SIP_TRUNK_ID;
@@ -100,16 +104,43 @@ export async function POST(req: Request) {
     });
 
     // 6. Dispatch the agent to the room so it joins and speaks
-    await agentDispatchClient.createDispatch(roomName, "voice-agent");
+    let dispatchMetadata: string | undefined;
+    let dispatchRule = "voice-agent";
+    if (agentKey) {
+      try {
+        const agentData = await getAgent(agentKey);
+        if (agentData) {
+          dispatchRule = agentData.dispatchRuleName || dispatchRule;
+          dispatchMetadata = buildDispatchMetadata(agentData);
+        }
+      } catch (err) {
+        console.error(
+          "[calls/outbound] failed to build dispatch metadata:",
+          err,
+        );
+      }
+    }
+    await agentDispatchClient.createDispatch(
+      roomName,
+      dispatchRule,
+      dispatchMetadata ? { metadata: dispatchMetadata } : undefined,
+    );
 
     // Add to history
     if (agentKey) {
-      addCallRecord({
+      await addCallRecord({
         id: roomName,
+        roomName,
         agentKey,
+        agentId: agentKey,
         phoneNumber: toNumber,
         startTime: timestamp,
         status: "in-progress",
+        isPlayground: isPlayground ?? false,
+        ...(testType ? { testType } : {}),
+        ...(isPlayground && testType === "phoneCall"
+          ? { testNumber: toNumber }
+          : {}),
       });
     }
 

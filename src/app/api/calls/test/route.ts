@@ -4,7 +4,8 @@ import { AgentDispatchClient } from "livekit-server-sdk";
 import { z } from "zod";
 import { agents } from "@/lib/agents/registry";
 import { getAgent } from "@/lib/firebase/agents";
-import { buildSystemPrompt } from "@/lib/agents/promptBuilder";
+import { buildDispatchMetadata } from "@/lib/agents/promptBuilder";
+import { addCallRecord } from "@/lib/history";
 
 const testCallSchema = z.object({
   agentKey: z.string().min(1),
@@ -31,9 +32,16 @@ export async function POST(req: Request) {
 
     const { roomName, agentKey } = parsed.data;
 
-    const agent = agents[agentKey];
-    if (!agent) {
-      return NextResponse.json({ error: "Agent not found" }, { status: 404 });
+    // For dynamic agents not in the static registry, look up dispatch rule from Firestore
+    let dispatchRuleName: string;
+    if (agents[agentKey]) {
+      dispatchRuleName = agents[agentKey].dispatchRuleName;
+    } else {
+      const agentData = await getAgent(agentKey);
+      if (!agentData) {
+        return NextResponse.json({ error: "Agent not found" }, { status: 404 });
+      }
+      dispatchRuleName = agentData.dispatchRuleName;
     }
 
     // Build dispatch metadata with compiled prompt so the agent worker can
@@ -42,13 +50,7 @@ export async function POST(req: Request) {
     try {
       const agentData = await getAgent(agentKey);
       if (agentData) {
-        const meta: Record<string, unknown> = {
-          systemPrompt: buildSystemPrompt(agentData),
-        };
-        if (agentData.voiceGreeting?.trim()) {
-          meta.voiceGreeting = agentData.voiceGreeting.trim();
-        }
-        dispatchMetadata = JSON.stringify(meta);
+        dispatchMetadata = buildDispatchMetadata(agentData);
       }
     } catch (err) {
       console.error(
@@ -61,7 +63,7 @@ export async function POST(req: Request) {
     // if the LiveKit server or dispatch agent is unresponsive
     const dispatchPromise = agentDispatchClient.createDispatch(
       roomName,
-      agent.dispatchRuleName,
+      dispatchRuleName,
       dispatchMetadata ? { metadata: dispatchMetadata } : undefined,
     );
     const timeoutPromise = new Promise((_, reject) => {
@@ -69,6 +71,22 @@ export async function POST(req: Request) {
     });
 
     await Promise.race([dispatchPromise, timeoutPromise]);
+
+    // Record playground browser test in call history
+    try {
+      await addCallRecord({
+        id: roomName,
+        roomName,
+        agentKey,
+        agentId: agentKey,
+        startTime: Date.now(),
+        status: "in-progress",
+        isPlayground: true,
+        testType: "widget",
+      });
+    } catch (err) {
+      console.error("[calls/test] failed to write call record:", err);
+    }
 
     return NextResponse.json({
       success: true,

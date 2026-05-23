@@ -20,6 +20,9 @@
 # production
 /build
 
+# agent usage files (written per-call, data is persisted to Firestore)
+/.agent-usage/
+
 # misc
 .DS_Store
 *.pem
@@ -39,3 +42,5 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+

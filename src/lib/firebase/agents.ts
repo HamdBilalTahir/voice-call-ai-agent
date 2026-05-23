@@ -7,6 +7,7 @@ import { getDb } from "./admin";
 import {
   agents as registryAgents,
   type AgentConfig,
+  type AgentDirection,
 } from "@/lib/agents/registry";
 
 // ─── Filesystem fallback (for agents not yet migrated to Firestore) ───────────
@@ -92,6 +93,13 @@ export interface AgentFirestoreDoc {
   updatedAt?: FirebaseFirestore.Timestamp;
   updatedBy?: string;
   updatedByName?: string;
+  // Dynamic-agent fields (set on creation, read-only after)
+  isDynamic?: boolean;
+  direction?: string;
+  language?: string;
+  dispatchRuleName?: string;
+  phoneNumber?: string;
+  industry?: string;
   // allow unknown fields — they are preserved on partial writes
   [key: string]: unknown;
 }
@@ -120,6 +128,8 @@ export interface AgentFullData extends AgentConfig {
  * Any field not in this set is silently dropped on write.
  */
 const TIER1_FIELD_LIST = [
+  "name",
+  "description",
   "roleAndResponsibilities",
   "personaLanguageAndTone",
   "mistakesToAvoid",
@@ -169,19 +179,14 @@ const VoiceSettingsWriteSchema = z
 
 export const AgentWriteSchema = z
   .object({
-    roleAndResponsibilities: z
-      .string()
-      .min(
-        1,
-        "Role & responsibilities is required — it drives the agent's core behaviour.",
-      )
-      .max(8000)
-      .optional(),
-    personaLanguageAndTone: z.string().max(4000).optional(),
-    mistakesToAvoid: z.string().max(4000).optional(),
-    additionalInstructions: z.string().max(4000).optional(),
-    voiceGreeting: z.string().max(500).optional(),
-    voiceInstructions: z.string().max(4000).optional(),
+    name: z.string().min(1).max(100).optional(),
+    description: z.string().optional(),
+    roleAndResponsibilities: z.string().optional(),
+    personaLanguageAndTone: z.string().optional(),
+    mistakesToAvoid: z.string().optional(),
+    additionalInstructions: z.string().optional(),
+    voiceGreeting: z.string().optional(),
+    voiceInstructions: z.string().optional(),
     voiceEnabled: z.boolean().optional(),
     voiceSettings: VoiceSettingsWriteSchema.optional(),
     migrationApplied: z.boolean().optional(),
@@ -244,19 +249,38 @@ function mergeAgentData(
  * Safe to use in server components — falls back to registry-only on Firestore error.
  */
 export async function listAgents(): Promise<AgentFullData[]> {
-  const base = Object.values(registryAgents);
+  const staticAgents = Object.values(registryAgents);
   try {
     const db = getDb();
     const snap = await db.collection("agents").get();
     const byKey = new Map<string, AgentFirestoreDoc>();
     snap.docs.forEach((d) => byKey.set(d.id, d.data() as AgentFirestoreDoc));
 
-    return base.map((config) =>
+    const results: AgentFullData[] = staticAgents.map((config) =>
       mergeAgentData(config, byKey.get(config.key) ?? {}),
     );
+
+    // Also include Firestore-only agents (dynamically created via UI)
+    for (const doc of snap.docs) {
+      const data = doc.data() as AgentFirestoreDoc;
+      if (data.isDynamic && !registryAgents[doc.id]) {
+        const dynamicConfig: AgentConfig = {
+          key: doc.id,
+          direction: (data.direction as AgentDirection) ?? "outbound",
+          name: data.name ?? doc.id,
+          language: data.language ?? "en",
+          dispatchRuleName: data.dispatchRuleName ?? "",
+          phoneNumber: data.phoneNumber ?? "",
+          description: data.description ?? "",
+        };
+        results.push(mergeAgentData(dynamicConfig, data));
+      }
+    }
+
+    return results;
   } catch (err) {
     console.error("[firebase/agents] listAgents failed:", err);
-    return base.map((config) => mergeAgentData(config, {}));
+    return staticAgents.map((config) => mergeAgentData(config, {}));
   }
 }
 
@@ -268,22 +292,40 @@ export async function getAgent(
   agentKey: string,
 ): Promise<AgentFullData | null> {
   const config = registryAgents[agentKey];
-  if (!config) return null;
 
   try {
     const db = getDb();
     const docRef = db.collection("agents").doc(agentKey);
     const snap = await docRef.get();
-    const agentData = mergeAgentData(
-      config,
-      snap.exists ? (snap.data() as AgentFirestoreDoc) : {},
-    );
+
+    // For dynamic agents not in the static registry, build config from Firestore
+    const firestoreData = snap.exists ? (snap.data() as AgentFirestoreDoc) : {};
+    const effectiveConfig: AgentConfig =
+      config ??
+      (firestoreData.isDynamic
+        ? {
+            key: agentKey,
+            direction:
+              (firestoreData.direction as AgentDirection) ?? "outbound",
+            name: firestoreData.name ?? agentKey,
+            language: firestoreData.language ?? "en",
+            dispatchRuleName: firestoreData.dispatchRuleName ?? "",
+            phoneNumber: firestoreData.phoneNumber ?? "",
+            description: firestoreData.description ?? "",
+          }
+        : null);
+
+    if (!effectiveConfig) return null;
+
+    const agentData = mergeAgentData(effectiveConfig, firestoreData);
 
     // If the section fields have never been saved individually, try two fallbacks
     // in priority order so the UI always shows the agent's actual content.
+    // (Skip for dynamic agents — they start with Firestore content only)
     if (
       !agentData.roleAndResponsibilities &&
-      !agentData.personaLanguageAndTone
+      !agentData.personaLanguageAndTone &&
+      config // static agents only
     ) {
       // 1. voiceInstructions in Firestore contains the full prompt with [HEADERS]
       if (
@@ -319,7 +361,70 @@ export async function getAgent(
     return agentData;
   } catch (err) {
     console.error("[firebase/agents] getAgent failed:", err);
+    if (!config) return null;
     return mergeAgentData(config, {});
+  }
+}
+
+// ─── Create dynamic agent ─────────────────────────────────────────────────────
+
+export interface CreateAgentParams {
+  name: string;
+  direction: "inbound" | "outbound";
+  language: string;
+  dispatchRuleName: string;
+  description: string;
+  roleAndResponsibilities: string;
+  personaLanguageAndTone?: string;
+  mistakesToAvoid?: string;
+  additionalInstructions?: string;
+  voiceGreeting?: string;
+  industry?: string;
+}
+
+function slugify(s: string): string {
+  return (
+    s
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-|-$/g, "")
+      .slice(0, 36) || "agent"
+  );
+}
+
+export async function createAgent(
+  params: CreateAgentParams,
+): Promise<{ ok: true; key: string } | { ok: false; error: string }> {
+  try {
+    const db = getDb();
+    const slug = slugify(params.name);
+    const docRef = await db.collection("agents").add({
+      isDynamic: true,
+      slug,
+      name: params.name,
+      description: params.description,
+      direction: params.direction,
+      language: params.language,
+      dispatchRuleName: params.dispatchRuleName,
+      phoneNumber: "",
+      roleAndResponsibilities: params.roleAndResponsibilities,
+      personaLanguageAndTone: params.personaLanguageAndTone ?? "",
+      mistakesToAvoid: params.mistakesToAvoid ?? "",
+      additionalInstructions: params.additionalInstructions ?? "",
+      voiceGreeting: params.voiceGreeting ?? "",
+      voiceEnabled: false,
+      voiceSettings: defaultVoiceSettings(params.direction),
+      tools: [],
+      industry: params.industry ?? "other",
+      createdAt: FieldValue.serverTimestamp(),
+      updatedAt: FieldValue.serverTimestamp(),
+    });
+    // Write the Firestore-generated doc ID back as the `key` field
+    await docRef.update({ key: docRef.id });
+    return { ok: true, key: docRef.id };
+  } catch (err) {
+    console.error("[firebase/agents] createAgent failed:", err);
+    return { ok: false, error: "Failed to create agent" };
   }
 }
 
@@ -353,9 +458,6 @@ export async function updateAgentConfig(
     force?: boolean;
   },
 ): Promise<UpdateResult> {
-  const config = registryAgents[agentKey];
-  if (!config) return { ok: false, error: "Agent not found" };
-
   try {
     const db = getDb();
     const docRef = db.collection("agents").doc(agentKey);

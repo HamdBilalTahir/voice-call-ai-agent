@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import {
   getCallHistory,
   getAgentCallHistory,
-  updateCallRecord,
+  updateCallRecordById,
 } from "@/lib/history";
 
 export async function GET(request: NextRequest) {
@@ -11,11 +11,8 @@ export async function GET(request: NextRequest) {
     const agent = searchParams.get("agent");
 
     const history = agent
-      ? getAgentCallHistory(agent)
-      : getCallHistory()
-          .filter((r) => !r.archived)
-          .sort((a, b) => b.startTime - a.startTime)
-          .slice(0, 500);
+      ? await getAgentCallHistory(agent)
+      : (await getCallHistory()).filter((r) => !r.archived).slice(0, 500);
 
     return NextResponse.json(history);
   } catch (error) {
@@ -42,7 +39,7 @@ export async function PATCH(request: NextRequest) {
     }
 
     for (const id of ids) {
-      updateCallRecord(id, updates);
+      await updateCallRecordById(id, updates);
     }
 
     return NextResponse.json({ success: true, count: ids.length });

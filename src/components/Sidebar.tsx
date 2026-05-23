@@ -1,8 +1,8 @@
 "use client";
 
 import Link from "next/link";
-import { usePathname } from "next/navigation";
-import { useState, useEffect, useRef } from "react";
+import { usePathname, useRouter } from "next/navigation";
+import { useState, useEffect, useRef, useCallback } from "react";
 import {
   LayoutDashboard,
   Bot,
@@ -22,6 +22,7 @@ import {
   Settings,
   LogOut,
   MoreHorizontal,
+  Pencil,
 } from "lucide-react";
 import { AgentConfig } from "@/lib/agents/registry";
 import { cn } from "@/lib/utils";
@@ -159,9 +160,63 @@ function SidebarInner({
   pathname: string;
 }) {
   const isAgentsActive = pathname.startsWith("/agents");
+  const router = useRouter();
   const [avatarMenuOpen, setAvatarMenuOpen] = useState(false);
   const [logoutConfirm, setLogoutConfirm] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
+
+  const [editingKey, setEditingKey] = useState<string | null>(null);
+  const [editingValue, setEditingValue] = useState("");
+  const [nameOverrides, setNameOverrides] = useState<Record<string, string>>(
+    {},
+  );
+  const renameInputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (editingKey) renameInputRef.current?.focus();
+  }, [editingKey]);
+
+  const startRename = useCallback(
+    (key: string, currentName: string, e: React.MouseEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
+      setEditingKey(key);
+      setEditingValue(nameOverrides[key] ?? currentName);
+    },
+    [nameOverrides],
+  );
+
+  const saveRename = useCallback(
+    async (agent: AgentConfig) => {
+      const trimmed = editingValue.trim();
+      setEditingKey(null);
+      if (!trimmed || trimmed === (nameOverrides[agent.key] ?? agent.name))
+        return;
+      setNameOverrides((prev) => ({ ...prev, [agent.key]: trimmed }));
+      try {
+        await fetch(`/api/agents/${agent.key}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            payload: { name: trimmed },
+            updatedBy: "system",
+            updatedByName: "App User",
+          }),
+        });
+        const agentPath = `/agents/${agent.direction}/${agent.key}`;
+        if (pathname === agentPath || pathname.startsWith(agentPath + "?")) {
+          router.refresh();
+        }
+      } catch {
+        setNameOverrides((prev) => {
+          const next = { ...prev };
+          delete next[agent.key];
+          return next;
+        });
+      }
+    },
+    [editingValue, nameOverrides, pathname, router],
+  );
 
   useEffect(() => {
     function handleOutside(e: MouseEvent) {
@@ -226,31 +281,70 @@ function SidebarInner({
                         pathname === agentPath ||
                         pathname.startsWith(agentPath + "?") ||
                         pathname.startsWith(agentPath + "/");
+                      const displayName =
+                        nameOverrides[agent.key] ?? agent.name;
+                      const isRenaming = editingKey === agent.key;
                       return (
-                        <Link
+                        <div
                           key={agent.key}
-                          href={agentPath}
-                          className={cn(
-                            "flex items-center gap-2 px-2 py-1.5 rounded-md text-[13px] transition-colors",
-                            isActive
-                              ? "bg-sidebar-accent text-sidebar-primary font-medium"
-                              : "text-muted-foreground hover:text-sidebar-foreground hover:bg-sidebar-accent/50",
-                          )}
+                          className="group relative flex items-center"
                         >
-                          <span
-                            className={cn(
-                              "size-1.5 rounded-full shrink-0 transition-colors",
-                              agent.voiceEnabled
-                                ? "bg-success animate-pulse"
-                                : "bg-muted-foreground/50",
-                            )}
-                            title={agent.voiceEnabled ? "Live" : "Paused"}
-                          />
-                          <span className="truncate">{agent.name}</span>
-                        </Link>
+                          {isRenaming ? (
+                            <input
+                              ref={renameInputRef}
+                              value={editingValue}
+                              onChange={(e) => setEditingValue(e.target.value)}
+                              onBlur={() => saveRename(agent)}
+                              onKeyDown={(e) => {
+                                if (e.key === "Enter") saveRename(agent);
+                                if (e.key === "Escape") setEditingKey(null);
+                              }}
+                              className="flex-1 px-2 py-1.5 rounded-md text-[13px] bg-sidebar-accent text-sidebar-primary border border-primary/40 outline-none min-w-0"
+                            />
+                          ) : (
+                            <>
+                              <Link
+                                href={agentPath}
+                                className={cn(
+                                  "flex flex-1 items-center gap-2 px-2 py-1.5 rounded-md text-[13px] transition-colors min-w-0 pr-7",
+                                  isActive
+                                    ? "bg-sidebar-accent text-sidebar-primary font-medium"
+                                    : "text-muted-foreground hover:text-sidebar-foreground hover:bg-sidebar-accent/50",
+                                )}
+                              >
+                                <span
+                                  className={cn(
+                                    "size-1.5 rounded-full shrink-0 transition-colors",
+                                    agent.voiceEnabled
+                                      ? "bg-success animate-pulse"
+                                      : "bg-muted-foreground/50",
+                                  )}
+                                  title={agent.voiceEnabled ? "Live" : "Paused"}
+                                />
+                                <span className="truncate">{displayName}</span>
+                              </Link>
+                              <button
+                                onClick={(e) =>
+                                  startRename(agent.key, displayName, e)
+                                }
+                                title="Rename agent"
+                                className="absolute right-1 opacity-0 group-hover:opacity-100 transition-opacity p-1 rounded text-muted-foreground hover:text-foreground"
+                              >
+                                <Pencil className="size-3" />
+                              </button>
+                            </>
+                          )}
+                        </div>
                       );
                     })}
-                    <button className="flex items-center gap-1.5 px-2 py-1.5 w-full rounded-md text-xs text-muted-foreground hover:text-foreground hover:bg-muted transition-colors">
+                    <button
+                      onClick={() =>
+                        window.dispatchEvent(
+                          new CustomEvent("open-welcome-modal"),
+                        )
+                      }
+                      className="flex items-center gap-1.5 px-2 py-1.5 w-full rounded-md text-xs text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
+                    >
                       <Plus className="size-3" />
                       New agent
                     </button>

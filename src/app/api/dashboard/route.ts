@@ -51,7 +51,7 @@ export interface DashboardResponse {
 }
 
 export async function GET() {
-  const all = getCallHistory();
+  const all = await getCallHistory();
   const now = Date.now();
 
   const today = all.filter((r) => r.startTime >= now - DAY_MS);

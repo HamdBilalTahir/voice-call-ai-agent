@@ -1,13 +1,18 @@
 import { NextRequest, NextResponse } from "next/server";
-import { migrateAgents } from "@/lib/firebase/migration";
+import {
+  migrateAgents,
+  migrateCallHistoryJson,
+  reKeyCallHistoryDocs,
+  backfillPlaygroundFields,
+  normalizeCallHistoryDocs,
+  migrateAgentDocIds,
+} from "@/lib/firebase/migration";
 
 /**
  * POST /api/agents/migrate
  *
- * One-time backfill that parses legacy voiceInstructions documents into the four
- * structured section fields. Safe to run multiple times — already-populated agents
- * are skipped.
- *
+ * Runs one or more backfill migrations. Pass `{ target: "agents" | "callHistory" | "all" }`
+ * in the body (defaults to "agents" for backwards compatibility).
  * Requires the INTERNAL_API_SECRET header for authorization.
  */
 export async function POST(req: NextRequest) {
@@ -20,8 +25,36 @@ export async function POST(req: NextRequest) {
   }
 
   try {
-    const result = await migrateAgents();
-    return NextResponse.json(result);
+    const body = await req.json().catch(() => ({}));
+    const target: string = body.target ?? "agents";
+
+    const results: Record<string, unknown> = {};
+
+    if (target === "agents" || target === "all") {
+      results.agents = await migrateAgents();
+    }
+
+    if (target === "callHistory" || target === "all") {
+      results.callHistory = await migrateCallHistoryJson();
+    }
+
+    if (target === "reKeyCallHistory" || target === "all") {
+      results.reKeyCallHistory = await reKeyCallHistoryDocs();
+    }
+
+    if (target === "backfillPlayground" || target === "all") {
+      results.backfillPlayground = await backfillPlaygroundFields();
+    }
+
+    if (target === "normalizeCallHistory") {
+      results.normalizeCallHistory = await normalizeCallHistoryDocs();
+    }
+
+    if (target === "agentDocIds") {
+      results.agentDocIds = await migrateAgentDocIds();
+    }
+
+    return NextResponse.json(results);
   } catch (err) {
     console.error("[migrate] failed:", err);
     return NextResponse.json(

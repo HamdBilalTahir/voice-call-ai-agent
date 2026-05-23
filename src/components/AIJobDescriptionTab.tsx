@@ -25,12 +25,6 @@ function relativeTime(ts: number): string {
   return `${Math.floor(min / 60)}h ago`;
 }
 
-function getCounterColor(current: number, max: number): string {
-  if (current > max) return "text-destructive";
-  if (current >= max * 0.9) return "text-amber-500";
-  return "text-muted-foreground";
-}
-
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 interface PromptSections {
@@ -47,7 +41,6 @@ interface SectionMeta {
   placeholder: string;
   required?: boolean;
   outboundRequired?: boolean;
-  maxLength: number;
 }
 
 const SECTION_META: Record<keyof PromptSections, SectionMeta> = {
@@ -57,27 +50,23 @@ const SECTION_META: Record<keyof PromptSections, SectionMeta> = {
     placeholder:
       "e.g. Answer inbound calls from customers looking to book an appointment. Collect their name, preferred date and time, and confirm the booking.",
     required: true,
-    maxLength: 8000,
   },
   personaLanguageAndTone: {
     title: "How it talks",
     helper: "Tone, style, phrases to use or avoid.",
     placeholder:
       "e.g. Speak in a warm, professional tone. Use short sentences. Always address the caller by their first name.",
-    maxLength: 4000,
   },
   mistakesToAvoid: {
     title: "What to avoid",
     helper: "Behaviors, topics, or phrases it should never do.",
     placeholder:
       "e.g. Never mention competitor names. Do not promise same-day availability without checking first.",
-    maxLength: 4000,
   },
   additionalInstructions: {
     title: "Anything else",
     helper: "Extra rules or context that didn't fit above.",
     placeholder: "Add any extra rules or context for your agent.",
-    maxLength: 4000,
   },
   voiceGreeting: {
     title: "Opening line",
@@ -85,7 +74,6 @@ const SECTION_META: Record<keyof PromptSections, SectionMeta> = {
     placeholder:
       "e.g. Hi, this is Maya from Sunrise Clinic — how can I help you today?",
     outboundRequired: true,
-    maxLength: 500,
   },
 };
 
@@ -379,15 +367,6 @@ export function InstructionsTab({
         errors.voiceGreeting =
           "Outbound agents need an opening line — it's the first thing the caller hears.";
       }
-      for (const key of Object.keys(SECTION_META) as Array<
-        keyof PromptSections
-      >) {
-        if (values[key].length > SECTION_META[key].maxLength) {
-          errors[key] =
-            `Exceeds ${SECTION_META[key].maxLength.toLocaleString()} character limit.`;
-        }
-      }
-
       setFieldErrors(errors);
       return Object.keys(errors).length === 0;
     },
@@ -657,21 +636,11 @@ export function InstructionsTab({
                     }}
                   />
 
-                  <div className="flex items-center justify-between gap-2">
-                    <div className="flex-1">
-                      {fieldErrors[key] && (
-                        <p className="text-xs text-destructive">
-                          {fieldErrors[key]}
-                        </p>
-                      )}
-                    </div>
-                    <p
-                      className={`text-xs tabular-nums shrink-0 ${getCounterColor(sections[key].length, meta.maxLength)}`}
-                    >
-                      {sections[key].length.toLocaleString()} /{" "}
-                      {meta.maxLength.toLocaleString()}
+                  {fieldErrors[key] && (
+                    <p className="text-xs text-destructive mt-1">
+                      {fieldErrors[key]}
                     </p>
-                  </div>
+                  )}
                 </div>
               );
             },
