@@ -25,6 +25,7 @@ import {
   Pencil,
 } from "lucide-react";
 import { AgentConfig } from "@/lib/agents/registry";
+import { useAuth } from "@/contexts/AuthContext";
 import { cn } from "@/lib/utils";
 
 interface SidebarProps {
@@ -146,6 +147,13 @@ function NavLink({
   return el;
 }
 
+function initials(nameOrEmail: string): string {
+  const name = nameOrEmail.split("@")[0];
+  const parts = name.trim().split(/\s+/);
+  if (parts.length >= 2) return (parts[0][0] + parts[1][0]).toUpperCase();
+  return name.slice(0, 2).toUpperCase();
+}
+
 function SidebarInner({
   agents,
   collapsed,
@@ -161,6 +169,7 @@ function SidebarInner({
 }) {
   const isAgentsActive = pathname.startsWith("/agents");
   const router = useRouter();
+  const { signOut, user, profile } = useAuth();
   const [avatarMenuOpen, setAvatarMenuOpen] = useState(false);
   const [logoutConfirm, setLogoutConfirm] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
@@ -443,6 +452,7 @@ function SidebarInner({
                       onClick={() => {
                         setAvatarMenuOpen(false);
                         setLogoutConfirm(false);
+                        void signOut();
                       }}
                       className="flex-1 px-2 py-1 text-xs font-medium rounded-md bg-destructive text-destructive-foreground hover:bg-destructive/90 transition-colors"
                     >
@@ -465,7 +475,7 @@ function SidebarInner({
               >
                 <div className="size-7 rounded-full bg-primary/10 flex items-center justify-center shrink-0">
                   <span className="text-xs font-semibold text-primary select-none">
-                    AJ
+                    {initials(profile?.displayName || user?.email || "?")}
                   </span>
                 </div>
               </button>
@@ -480,15 +490,15 @@ function SidebarInner({
             >
               <div className="size-7 rounded-full bg-primary/10 flex items-center justify-center shrink-0">
                 <span className="text-xs font-semibold text-primary select-none">
-                  AJ
+                  {initials(profile?.displayName || user?.email || "?")}
                 </span>
               </div>
               <div className="flex-1 min-w-0">
                 <p className="text-xs font-medium text-sidebar-foreground truncate leading-tight">
-                  Alex Johnson
+                  {profile?.displayName || "—"}
                 </p>
                 <p className="text-[10px] text-muted-foreground truncate leading-tight">
-                  alex@company.com
+                  {user?.email || ""}
                 </p>
               </div>
             </button>

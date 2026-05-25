@@ -4,21 +4,34 @@ export interface DispatchMetadata {
   systemPrompt?: string;
   voiceGreeting?: string;
   llmModel?: string;
+  llmProvider?: string;
+  llmApiKey?: string;
   ttsModel?: string;
+  ttsProvider?: string;
+  ttsApiKey?: string;
   ttsVoiceId?: string;
   sttModel?: string;
+  sttProvider?: string;
+  sttApiKey?: string;
   sttLanguage?: string;
   [key: string]: unknown;
 }
 
+export interface ResolvedProviderKeys {
+  llmApiKey?: string;
+  ttsApiKey?: string;
+  sttApiKey?: string;
+}
+
 /**
  * Builds the full dispatch metadata payload from a Firestore agent document.
- * All voice settings from `voiceSettings` are included so the agent worker
- * uses what's configured in the database rather than its compiled defaults.
+ * Pass resolvedKeys (fetched server-side from providerConfigs) to inject API
+ * keys so the worker uses per-agent credentials instead of global env vars.
  */
 export function buildDispatchMetadata(
   agentData: AgentFullData,
   extra: Record<string, unknown> = {},
+  resolvedKeys: ResolvedProviderKeys = {},
 ): string {
   const meta: DispatchMetadata = {
     ...extra,
@@ -29,9 +42,15 @@ export function buildDispatchMetadata(
   }
   const vs = agentData.voiceSettings;
   if (vs?.llmModel) meta.llmModel = vs.llmModel;
+  if (vs?.llmProvider) meta.llmProvider = vs.llmProvider;
+  if (resolvedKeys.llmApiKey) meta.llmApiKey = resolvedKeys.llmApiKey;
   if (vs?.ttsModel) meta.ttsModel = vs.ttsModel;
+  if (vs?.ttsProvider) meta.ttsProvider = vs.ttsProvider;
+  if (resolvedKeys.ttsApiKey) meta.ttsApiKey = resolvedKeys.ttsApiKey;
   if (vs?.ttsVoiceId) meta.ttsVoiceId = vs.ttsVoiceId;
   if (vs?.sttModel) meta.sttModel = vs.sttModel;
+  if (vs?.sttProvider) meta.sttProvider = vs.sttProvider;
+  if (resolvedKeys.sttApiKey) meta.sttApiKey = resolvedKeys.sttApiKey;
   if (vs?.sttLanguage) meta.sttLanguage = vs.sttLanguage;
   return JSON.stringify(meta);
 }

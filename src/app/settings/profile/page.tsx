@@ -4,6 +4,7 @@ import { useState } from "react";
 import { Save, Shield, Eye, EyeOff } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useToast } from "@/components/ui/toast";
+import { useAuth } from "@/contexts/AuthContext";
 import { Switch } from "@/components/ui/switch";
 
 const INPUT =
@@ -14,8 +15,11 @@ const SAVE_BTN =
 
 export default function ProfilePage() {
   const { toast } = useToast();
-  const [name, setName] = useState("Alex Johnson");
-  const [email, setEmail] = useState("alex@company.com");
+  const { user, profile } = useAuth();
+  const [name, setName] = useState(
+    profile?.displayName ?? user?.displayName ?? "",
+  );
+  const [email, setEmail] = useState(user?.email ?? "");
   const [currentPw, setCurrentPw] = useState("");
   const [newPw, setNewPw] = useState("");
   const [showCurrent, setShowCurrent] = useState(false);

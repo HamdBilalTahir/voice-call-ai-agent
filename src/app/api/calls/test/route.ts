@@ -5,6 +5,7 @@ import { z } from "zod";
 import { agents } from "@/lib/agents/registry";
 import { getAgent } from "@/lib/firebase/agents";
 import { buildDispatchMetadata } from "@/lib/agents/promptBuilder";
+import { resolveProviderKeys } from "@/lib/firebase/resolveProviderKeys";
 import { addCallRecord } from "@/lib/history";
 
 const testCallSchema = z.object({
@@ -50,7 +51,8 @@ export async function POST(req: Request) {
     try {
       const agentData = await getAgent(agentKey);
       if (agentData) {
-        dispatchMetadata = buildDispatchMetadata(agentData);
+        const resolvedKeys = await resolveProviderKeys(agentData);
+        dispatchMetadata = buildDispatchMetadata(agentData, {}, resolvedKeys);
       }
     } catch (err) {
       console.error(

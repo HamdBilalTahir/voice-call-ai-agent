@@ -13,6 +13,7 @@ import {
   Shuffle,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { getIdToken } from "@/contexts/AuthContext";
 
 const STORAGE_KEY = "onboarding-done";
 
@@ -141,9 +142,13 @@ export function WelcomeModal() {
     setStep("generating");
     setCreateError("");
     try {
+      const token = await getIdToken();
       const res = await fetch("/api/agents", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
         body: JSON.stringify({
           name: agentName.trim(),
           description: agentDescription.trim(),

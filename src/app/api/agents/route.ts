@@ -1,9 +1,12 @@
 import { NextResponse } from "next/server";
 import { listAgents, createAgent } from "@/lib/firebase/agents";
 import { agents as registryAgents } from "@/lib/agents/registry";
+import { verifyToken } from "@/lib/firebase/providerConfigs";
 
-export async function GET() {
-  const agents = await listAgents();
+export async function GET(req: Request) {
+  const token = req.headers.get("authorization")?.replace("Bearer ", "");
+  const uid = token ? ((await verifyToken(token)) ?? undefined) : undefined;
+  const agents = await listAgents(uid);
   return NextResponse.json(agents);
 }
 
@@ -36,6 +39,12 @@ function templateDispatchRule(direction: "inbound" | "outbound"): string {
 
 export async function POST(req: Request) {
   try {
+    const token = req.headers.get("authorization")?.replace("Bearer ", "");
+    const userId = token ? await verifyToken(token) : null;
+    if (!userId) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
+
     const {
       name,
       description,
@@ -71,6 +80,7 @@ export async function POST(req: Request) {
       additionalInstructions: anythingElse?.trim() ?? "",
       voiceGreeting: openingLine?.trim() ?? "",
       industry: industry ?? "other",
+      userId: userId,
     });
 
     if (!result.ok) {

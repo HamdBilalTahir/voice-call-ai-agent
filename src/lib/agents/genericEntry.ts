@@ -11,6 +11,8 @@ import {
 import * as elevenlabs from "@livekit/agents-plugin-elevenlabs";
 import * as deepgram from "@livekit/agents-plugin-deepgram";
 import * as google from "@livekit/agents-plugin-google";
+import * as openai from "@livekit/agents-plugin-openai";
+import * as cartesia from "@livekit/agents-plugin-cartesia";
 
 export interface AgentDefaults {
   systemPrompt: string;
@@ -27,21 +29,27 @@ interface DispatchMeta {
   systemPrompt?: string;
   voiceGreeting?: string;
   llmModel?: string;
+  llmProvider?: string;
+  llmApiKey?: string;
   ttsModel?: string;
+  ttsProvider?: string;
+  ttsApiKey?: string;
   ttsVoiceId?: string;
   sttModel?: string;
+  sttProvider?: string;
+  sttApiKey?: string;
   sttLanguage?: string;
 }
 
-function buildSTT(model: string, language: string) {
+function buildSTT(model: string, language: string, apiKey?: string) {
   switch (process.env.STT_PROVIDER) {
     case "inference":
       return new inference.STT({ model: "deepgram/nova-3", language });
     default:
       return new deepgram.STT({
-        model,
+        model: model as any,
         language,
-        apiKey: process.env.DEEPGRAM_API_KEY,
+        apiKey: apiKey ?? process.env.DEEPGRAM_API_KEY,
       });
   }
 }
@@ -61,9 +69,14 @@ export function makeAgentEntry(defaults: AgentDefaults) {
         let instructions = defaults.systemPrompt;
         let greeting = defaults.greeting;
         let llmModel = defaults.llmModel;
+        let llmProvider = "google";
+        let llmApiKey: string | undefined;
         let ttsModel = defaults.ttsModel;
+        let ttsProvider = "elevenlabs";
+        let ttsApiKey: string | undefined;
         let ttsVoiceId = defaults.ttsVoiceId;
         let sttModel = defaults.sttModel;
+        let sttApiKey: string | undefined;
         let sttLanguage = defaults.sttLanguage;
 
         try {
@@ -71,25 +84,47 @@ export function makeAgentEntry(defaults: AgentDefaults) {
           if (meta.systemPrompt) instructions = meta.systemPrompt;
           if (meta.voiceGreeting) greeting = meta.voiceGreeting;
           if (meta.llmModel) llmModel = meta.llmModel;
+          if (meta.llmProvider) llmProvider = meta.llmProvider;
+          if (meta.llmApiKey) llmApiKey = meta.llmApiKey;
           if (meta.ttsModel) ttsModel = meta.ttsModel;
+          if (meta.ttsProvider) ttsProvider = meta.ttsProvider;
+          if (meta.ttsApiKey) ttsApiKey = meta.ttsApiKey;
           if (meta.ttsVoiceId) ttsVoiceId = meta.ttsVoiceId;
           if (meta.sttModel) sttModel = meta.sttModel;
+          if (meta.sttApiKey) sttApiKey = meta.sttApiKey;
           if (meta.sttLanguage) sttLanguage = meta.sttLanguage;
         } catch {
           // malformed metadata — use static defaults
         }
 
+        const llm =
+          llmProvider === "openai"
+            ? new openai.LLM({
+                model: llmModel,
+                apiKey: llmApiKey ?? process.env.OPENAI_API_KEY,
+              })
+            : new google.LLM({
+                model: llmModel,
+                apiKey: llmApiKey ?? process.env.GEMINI_API_KEY,
+              });
+
+        const tts =
+          ttsProvider === "cartesia"
+            ? new cartesia.TTS({
+                model: ttsModel,
+                voice: ttsVoiceId || undefined,
+                apiKey: ttsApiKey ?? process.env.CARTESIA_API_KEY,
+              })
+            : new elevenlabs.TTS({
+                apiKey: ttsApiKey ?? process.env.ELEVENLABS_API_KEY,
+                model: ttsModel,
+                voiceId: ttsVoiceId,
+              });
+
         const session = new voice.AgentSession({
-          stt: buildSTT(sttModel, sttLanguage),
-          llm: new google.LLM({
-            model: llmModel,
-            apiKey: process.env.GEMINI_API_KEY,
-          }),
-          tts: new elevenlabs.TTS({
-            apiKey: process.env.ELEVENLABS_API_KEY,
-            model: ttsModel,
-            voiceId: ttsVoiceId,
-          }),
+          stt: buildSTT(sttModel, sttLanguage, sttApiKey),
+          llm,
+          tts,
         });
 
         const s = session as any;

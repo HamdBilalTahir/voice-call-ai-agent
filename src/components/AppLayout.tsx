@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { usePathname } from "next/navigation";
 import { AgentConfig } from "@/lib/agents/registry";
 import { Sidebar } from "@/components/Sidebar";
 import { TopBar } from "@/components/TopBar";
@@ -14,8 +15,14 @@ interface AppLayoutProps {
 }
 
 export function AppLayout({ agents, children }: AppLayoutProps) {
+  const pathname = usePathname();
   const [collapsed, setCollapsed] = useState(false);
   const [mobileOpen, setMobileOpen] = useState(false);
+
+  // Login page renders standalone — no sidebar, no topbar
+  if (pathname === "/login") {
+    return <ToastProvider>{children}</ToastProvider>;
+  }
 
   return (
     <ToastProvider>

@@ -65,6 +65,10 @@ async function readPromptFromFilesystem(
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
+export type LlmProvider = "google" | "openai";
+export type TtsProvider = "elevenlabs" | "cartesia";
+export type SttProvider = "deepgram";
+
 export interface VoiceSettings {
   callType: "inbound" | "outbound";
   language: string;
@@ -74,6 +78,13 @@ export interface VoiceSettings {
   ttsVoiceId: string;
   voiceType: string;
   llmModel: string;
+  // Provider selection + saved API key reference
+  llmProvider?: LlmProvider;
+  llmConfigId?: string;
+  ttsProvider?: TtsProvider;
+  ttsConfigId?: string;
+  sttProvider?: SttProvider;
+  sttConfigId?: string;
 }
 
 /** Raw Firestore document shape — unknown extra fields are preserved via index sig */
@@ -93,6 +104,7 @@ export interface AgentFirestoreDoc {
   updatedAt?: FirebaseFirestore.Timestamp;
   updatedBy?: string;
   updatedByName?: string;
+  userId?: string;
   // Dynamic-agent fields (set on creation, read-only after)
   isDynamic?: boolean;
   direction?: string;
@@ -119,6 +131,7 @@ export interface AgentFullData extends AgentConfig {
   updatedAt?: number; // Unix ms — safe for JSON
   updatedBy?: string;
   updatedByName?: string;
+  userId?: string;
 }
 
 // ─── Field allowlist (Tier 1 write) ──────────────────────────────────────────
@@ -139,6 +152,7 @@ const TIER1_FIELD_LIST = [
   "voiceEnabled",
   "voiceSettings",
   "migrationApplied",
+  "userId",
 ] as const;
 
 export type Tier1Field = (typeof TIER1_FIELD_LIST)[number];
@@ -166,7 +180,7 @@ export const DISPLAY_FIELD_MAP = {
 
 const VoiceSettingsWriteSchema = z
   .object({
-    // callType is read-only in this task — excluded from writes
+    // callType is read-only — excluded from writes
     language: z.string().max(20).optional(),
     sttLanguage: z.string().max(20).optional(),
     sttModel: z.string().max(50).optional(),
@@ -174,6 +188,12 @@ const VoiceSettingsWriteSchema = z
     ttsVoiceId: z.string().max(100).optional(),
     voiceType: z.string().max(50).optional(),
     llmModel: z.string().max(100).optional(),
+    llmProvider: z.enum(["google", "openai"]).optional(),
+    llmConfigId: z.string().max(128).optional(),
+    ttsProvider: z.enum(["elevenlabs", "cartesia"]).optional(),
+    ttsConfigId: z.string().max(128).optional(),
+    sttProvider: z.enum(["deepgram"]).optional(),
+    sttConfigId: z.string().max(128).optional(),
   })
   .strict();
 
@@ -190,6 +210,7 @@ export const AgentWriteSchema = z
     voiceEnabled: z.boolean().optional(),
     voiceSettings: VoiceSettingsWriteSchema.optional(),
     migrationApplied: z.boolean().optional(),
+    userId: z.string().optional(),
   })
   .strict();
 
@@ -239,6 +260,7 @@ function mergeAgentData(
     updatedAt: doc.updatedAt?.toMillis(),
     updatedBy: doc.updatedBy,
     updatedByName: doc.updatedByName,
+    userId: doc.userId,
   };
 }
 
@@ -248,7 +270,7 @@ function mergeAgentData(
  * Returns all agents from the registry, overlaying Firestore name/voiceEnabled.
  * Safe to use in server components — falls back to registry-only on Firestore error.
  */
-export async function listAgents(): Promise<AgentFullData[]> {
+export async function listAgents(uid?: string): Promise<AgentFullData[]> {
   const staticAgents = Object.values(registryAgents);
   try {
     const db = getDb();
@@ -261,9 +283,11 @@ export async function listAgents(): Promise<AgentFullData[]> {
     );
 
     // Also include Firestore-only agents (dynamically created via UI)
+    // When uid is provided, only return agents belonging to that user
     for (const doc of snap.docs) {
       const data = doc.data() as AgentFirestoreDoc;
       if (data.isDynamic && !registryAgents[doc.id]) {
+        if (uid && data.userId && data.userId !== uid) continue;
         const dynamicConfig: AgentConfig = {
           key: doc.id,
           direction: (data.direction as AgentDirection) ?? "outbound",
@@ -380,6 +404,7 @@ export interface CreateAgentParams {
   additionalInstructions?: string;
   voiceGreeting?: string;
   industry?: string;
+  userId: string;
 }
 
 function slugify(s: string): string {
@@ -416,6 +441,7 @@ export async function createAgent(
       voiceSettings: defaultVoiceSettings(params.direction),
       tools: [],
       industry: params.industry ?? "other",
+      userId: params.userId,
       createdAt: FieldValue.serverTimestamp(),
       updatedAt: FieldValue.serverTimestamp(),
     });

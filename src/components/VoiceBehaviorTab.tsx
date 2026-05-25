@@ -1,37 +1,79 @@
 "use client";
 
-import { useState, useEffect } from "react";
-import { AlertCircle, ChevronDown, ChevronUp } from "lucide-react";
+import { useState, useEffect, useRef } from "react";
+import {
+  AlertCircle,
+  ChevronDown,
+  ChevronUp,
+  Plus,
+  Trash2,
+  Key,
+} from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useToast } from "@/components/ui/toast";
+import { useAuth, getIdToken } from "@/contexts/AuthContext";
 import { type AgentFullData, type VoiceSettings } from "@/lib/firebase/agents";
 
-function relativeTime(ts: number): string {
-  const diff = Date.now() - ts;
-  const min = Math.floor(diff / 60_000);
-  if (min < 1) return "just now";
-  if (min < 60) return `${min}m ago`;
-  return `${Math.floor(min / 60)}h ago`;
-}
+// ─── Provider / model catalogue ──────────────────────────────────────────────
 
-interface VoiceBehaviorTabProps {
-  agentKey: string;
-  initialData?: AgentFullData;
-  onVoiceEnabledChange?: (enabled: boolean) => void;
-}
+const LLM_PROVIDERS = [
+  {
+    value: "google" as const,
+    label: "Google Gemini",
+    models: [
+      { value: "gemini-2.0-flash", label: "Gemini 2.0 Flash" },
+      {
+        value: "gemini-2.0-flash-thinking-exp",
+        label: "Gemini 2.0 Flash Thinking",
+      },
+      { value: "gemini-1.5-pro", label: "Gemini 1.5 Pro" },
+      { value: "gemini-1.5-flash", label: "Gemini 1.5 Flash" },
+    ],
+  },
+  {
+    value: "openai" as const,
+    label: "OpenAI",
+    models: [
+      { value: "gpt-4o", label: "GPT-4o" },
+      { value: "gpt-4o-mini", label: "GPT-4o Mini" },
+      { value: "gpt-4-turbo", label: "GPT-4 Turbo" },
+    ],
+  },
+];
 
-type WritableVoiceSettings = Omit<VoiceSettings, "callType">;
+const TTS_PROVIDERS = [
+  {
+    value: "elevenlabs" as const,
+    label: "ElevenLabs",
+    models: [
+      { value: "sonic-3", label: "Sonic 3" },
+      { value: "sonic-2", label: "Sonic 2" },
+      { value: "eleven_turbo_v2_5", label: "Turbo v2.5" },
+      { value: "eleven_multilingual_v2", label: "Multilingual v2" },
+    ],
+  },
+  {
+    value: "cartesia" as const,
+    label: "Cartesia",
+    models: [
+      { value: "sonic-2024-10-19", label: "Sonic (Oct 2024)" },
+      { value: "sonic-english", label: "Sonic English" },
+    ],
+  },
+];
 
-interface FormState {
-  language: string;
-  sttLanguage: string;
-  voiceType: string;
-  ttsVoiceId: string;
-  sttModel: string;
-  ttsModel: string;
-  llmModel: string;
-}
+const STT_PROVIDERS = [
+  {
+    value: "deepgram" as const,
+    label: "Deepgram",
+    models: [
+      { value: "nova-3", label: "Nova 3" },
+      { value: "nova-2", label: "Nova 2" },
+      { value: "enhanced", label: "Enhanced" },
+    ],
+  },
+];
 
 const VOICE_TYPE_OPTIONS = [
   { value: "female-1", label: "Female — Warm" },
@@ -60,7 +102,47 @@ const STT_LANGUAGE_OPTIONS = [
   { value: "ar", label: "Arabic" },
 ];
 
-// ─── Conflict modal (reused pattern) ─────────────────────────────────────────
+// ─── Types ────────────────────────────────────────────────────────────────────
+
+type LlmProvider = "google" | "openai";
+type TtsProvider = "elevenlabs" | "cartesia";
+type SttProvider = "deepgram";
+
+interface SavedKey {
+  id: string;
+  provider: string;
+  label: string;
+  maskedKey: string;
+}
+
+interface FormState {
+  language: string;
+  sttLanguage: string;
+  voiceType: string;
+  ttsVoiceId: string;
+  // LLM
+  llmProvider: LlmProvider;
+  llmModel: string;
+  llmConfigId: string;
+  // TTS
+  ttsProvider: TtsProvider;
+  ttsModel: string;
+  ttsConfigId: string;
+  // STT
+  sttProvider: SttProvider;
+  sttModel: string;
+  sttConfigId: string;
+}
+
+function relativeTime(ts: number): string {
+  const diff = Date.now() - ts;
+  const min = Math.floor(diff / 60_000);
+  if (min < 1) return "just now";
+  if (min < 60) return `${min}m ago`;
+  return `${Math.floor(min / 60)}h ago`;
+}
+
+// ─── Conflict modal ───────────────────────────────────────────────────────────
 
 function ConflictModal({
   updatedByName,
@@ -111,7 +193,7 @@ function ConflictModal({
   );
 }
 
-// ─── Field row ────────────────────────────────────────────────────────────────
+// ─── FieldRow / SelectField / TextInput ──────────────────────────────────────
 
 function FieldRow({
   label,
@@ -135,16 +217,19 @@ function SelectField({
   value,
   onChange,
   options,
+  disabled,
 }: {
   value: string;
   onChange: (v: string) => void;
   options: { value: string; label: string }[];
+  disabled?: boolean;
 }) {
   return (
     <select
       value={value}
       onChange={(e) => onChange(e.target.value)}
-      className="h-9 w-full rounded-lg border border-input bg-background px-3 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
+      disabled={disabled}
+      className="h-9 w-full rounded-lg border border-input bg-background px-3 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-ring disabled:opacity-50"
     >
       {options.map((o) => (
         <option key={o.value} value={o.value}>
@@ -175,7 +260,268 @@ function TextInput({
   );
 }
 
-// ─── VoiceBehaviorTab ─────────────────────────────────────────────────────────
+// ─── ApiKeyPicker ─────────────────────────────────────────────────────────────
+
+function ApiKeyPicker({
+  provider,
+  value,
+  onChange,
+  savedKeys,
+  onKeySaved,
+  onKeyDeleted,
+}: {
+  provider: string;
+  value: string;
+  onChange: (configId: string) => void;
+  savedKeys: SavedKey[];
+  onKeySaved: (key: SavedKey) => void;
+  onKeyDeleted: (configId: string) => void;
+}) {
+  const { user } = useAuth();
+  const { toast } = useToast();
+  const [addingNew, setAddingNew] = useState(false);
+  const [newLabel, setNewLabel] = useState("");
+  const [newKey, setNewKey] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [deleting, setDeleting] = useState<string | null>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (addingNew) inputRef.current?.focus();
+  }, [addingNew]);
+
+  const handleSaveKey = async () => {
+    if (!newKey.trim() || !user) return;
+    setSaving(true);
+    try {
+      const token = await getIdToken();
+      const res = await fetch("/api/provider-configs", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          provider,
+          label: newLabel.trim() || provider,
+          apiKey: newKey.trim(),
+        }),
+      });
+      if (!res.ok)
+        throw new Error((await res.json()).error ?? "Failed to save");
+      const saved: SavedKey = await res.json();
+      onKeySaved(saved);
+      onChange(saved.id);
+      setAddingNew(false);
+      setNewLabel("");
+      setNewKey("");
+      toast({ message: "API key saved.", variant: "success" });
+    } catch (err) {
+      toast({
+        message: err instanceof Error ? err.message : "Failed to save key",
+        variant: "error",
+      });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleDelete = async (configId: string) => {
+    if (!user) return;
+    setDeleting(configId);
+    try {
+      const token = await getIdToken();
+      await fetch(`/api/provider-configs/${configId}`, {
+        method: "DELETE",
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      onKeyDeleted(configId);
+      if (value === configId) onChange("");
+      toast({ message: "Key removed.", variant: "success" });
+    } catch {
+      toast({ message: "Failed to remove key.", variant: "error" });
+    } finally {
+      setDeleting(null);
+    }
+  };
+
+  const keysForProvider = savedKeys.filter((k) => k.provider === provider);
+
+  if (!user) {
+    return (
+      <p className="text-xs text-muted-foreground italic">
+        Sign in to manage API keys.
+      </p>
+    );
+  }
+
+  return (
+    <div className="flex flex-col gap-2">
+      <div className="flex gap-2">
+        <select
+          value={value}
+          onChange={(e) => {
+            if (e.target.value === "__add__") {
+              setAddingNew(true);
+            } else {
+              onChange(e.target.value);
+              setAddingNew(false);
+            }
+          }}
+          className="h-9 flex-1 rounded-lg border border-input bg-background px-3 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
+        >
+          <option value="">— use environment variable —</option>
+          {keysForProvider.map((k) => (
+            <option key={k.id} value={k.id}>
+              {k.label} ({k.maskedKey})
+            </option>
+          ))}
+          <option value="__add__">+ Add new key…</option>
+        </select>
+
+        {value && value !== "__add__" && (
+          <button
+            type="button"
+            title="Remove this key"
+            disabled={deleting === value}
+            onClick={() => void handleDelete(value)}
+            className="flex items-center justify-center size-9 rounded-lg border border-border text-muted-foreground hover:text-destructive hover:border-destructive transition-colors disabled:opacity-40"
+          >
+            <Trash2 className="size-3.5" />
+          </button>
+        )}
+      </div>
+
+      {addingNew && (
+        <div className="rounded-lg border border-border bg-muted/30 p-3 flex flex-col gap-2">
+          <div className="flex items-center gap-1.5 mb-0.5">
+            <Key className="size-3.5 text-muted-foreground" />
+            <span className="text-xs font-medium text-foreground">
+              New API key
+            </span>
+          </div>
+          <input
+            type="text"
+            value={newLabel}
+            onChange={(e) => setNewLabel(e.target.value)}
+            placeholder="Label (e.g. Production)"
+            className="h-8 w-full rounded-md border border-input bg-background px-2.5 text-xs text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring"
+          />
+          <input
+            ref={inputRef}
+            type="password"
+            value={newKey}
+            onChange={(e) => setNewKey(e.target.value)}
+            placeholder="Paste your API key"
+            className="h-8 w-full rounded-md border border-input bg-background px-2.5 text-xs font-mono text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring"
+          />
+          <div className="flex gap-2 justify-end">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => {
+                setAddingNew(false);
+                setNewLabel("");
+                setNewKey("");
+              }}
+            >
+              Cancel
+            </Button>
+            <Button
+              size="sm"
+              disabled={saving || !newKey.trim()}
+              onClick={() => void handleSaveKey()}
+            >
+              <Plus className="size-3.5 mr-1" />
+              {saving ? "Saving…" : "Save key"}
+            </Button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── ProviderSection ──────────────────────────────────────────────────────────
+
+function ProviderSection({
+  title,
+  providerValue,
+  providerOptions,
+  onProviderChange,
+  modelValue,
+  modelOptions,
+  onModelChange,
+  configId,
+  onConfigIdChange,
+  savedKeys,
+  onKeySaved,
+  onKeyDeleted,
+  providerKey,
+}: {
+  title: string;
+  providerValue: string;
+  providerOptions: { value: string; label: string }[];
+  onProviderChange: (v: string) => void;
+  modelValue: string;
+  modelOptions: { value: string; label: string }[];
+  onModelChange: (v: string) => void;
+  configId: string;
+  onConfigIdChange: (v: string) => void;
+  savedKeys: SavedKey[];
+  onKeySaved: (k: SavedKey) => void;
+  onKeyDeleted: (id: string) => void;
+  providerKey: string;
+}) {
+  return (
+    <div className="flex flex-col gap-4">
+      <h3 className="text-xs font-semibold text-foreground uppercase tracking-wide">
+        {title}
+      </h3>
+
+      <div className="grid grid-cols-2 gap-3">
+        <FieldRow label="Provider">
+          <SelectField
+            value={providerValue}
+            onChange={onProviderChange}
+            options={providerOptions}
+          />
+        </FieldRow>
+        <FieldRow label="Model">
+          <SelectField
+            value={modelValue}
+            onChange={onModelChange}
+            options={modelOptions}
+          />
+        </FieldRow>
+      </div>
+
+      <FieldRow
+        label="API key"
+        helper="Select a saved key or add a new one. Leave blank to use the server environment variable."
+      >
+        <ApiKeyPicker
+          provider={providerKey}
+          value={configId}
+          onChange={onConfigIdChange}
+          savedKeys={savedKeys}
+          onKeySaved={onKeySaved}
+          onKeyDeleted={onKeyDeleted}
+        />
+      </FieldRow>
+    </div>
+  );
+}
+
+// ─── Main component ───────────────────────────────────────────────────────────
+
+interface VoiceBehaviorTabProps {
+  agentKey: string;
+  initialData?: AgentFullData;
+  onVoiceEnabledChange?: (enabled: boolean) => void;
+}
+
+type WritableVoiceSettings = Omit<VoiceSettings, "callType">;
 
 export function VoiceBehaviorTab({
   agentKey,
@@ -183,42 +529,71 @@ export function VoiceBehaviorTab({
   onVoiceEnabledChange,
 }: VoiceBehaviorTabProps) {
   const { toast } = useToast();
+  const { user } = useAuth();
 
-  const fromData = (d: AgentFullData): FormState => ({
-    language: d.voiceSettings?.language ?? "en-US",
-    sttLanguage: d.voiceSettings?.sttLanguage ?? "multi",
-    voiceType: d.voiceSettings?.voiceType ?? "female-1",
-    ttsVoiceId: d.voiceSettings?.ttsVoiceId ?? "",
-    sttModel: d.voiceSettings?.sttModel ?? "nova-3",
-    ttsModel: d.voiceSettings?.ttsModel ?? "sonic-3",
-    llmModel: d.voiceSettings?.llmModel ?? "gemini-2.0-flash",
-  });
+  const fromData = (d: AgentFullData): FormState => {
+    const vs = d.voiceSettings;
+    const llmProv = (vs?.llmProvider ?? "google") as LlmProvider;
+    const ttsProv = (vs?.ttsProvider ?? "elevenlabs") as TtsProvider;
+    const sttProv = (vs?.sttProvider ?? "deepgram") as SttProvider;
+
+    const llmProvConfig = LLM_PROVIDERS.find((p) => p.value === llmProv)!;
+    const ttsProvConfig = TTS_PROVIDERS.find((p) => p.value === ttsProv)!;
+    const sttProvConfig = STT_PROVIDERS.find((p) => p.value === sttProv)!;
+
+    const llmModel =
+      vs?.llmModel && llmProvConfig.models.some((m) => m.value === vs.llmModel)
+        ? vs.llmModel
+        : llmProvConfig.models[0].value;
+
+    const ttsModel =
+      vs?.ttsModel && ttsProvConfig.models.some((m) => m.value === vs.ttsModel)
+        ? vs.ttsModel
+        : ttsProvConfig.models[0].value;
+
+    const sttModel =
+      vs?.sttModel && sttProvConfig.models.some((m) => m.value === vs.sttModel)
+        ? vs.sttModel
+        : sttProvConfig.models[0].value;
+
+    return {
+      language: vs?.language ?? "en-US",
+      sttLanguage: vs?.sttLanguage ?? "multi",
+      voiceType: vs?.voiceType ?? "female-1",
+      ttsVoiceId: vs?.ttsVoiceId ?? "",
+      llmProvider: llmProv,
+      llmModel,
+      llmConfigId: vs?.llmConfigId ?? "",
+      ttsProvider: ttsProv,
+      ttsModel,
+      ttsConfigId: vs?.ttsConfigId ?? "",
+      sttProvider: sttProv,
+      sttModel,
+      sttConfigId: vs?.sttConfigId ?? "",
+    };
+  };
+
+  const defaultForm: FormState = {
+    language: "en-US",
+    sttLanguage: "multi",
+    voiceType: "female-1",
+    ttsVoiceId: "",
+    llmProvider: "google",
+    llmModel: "gemini-2.0-flash",
+    llmConfigId: "",
+    ttsProvider: "elevenlabs",
+    ttsModel: "sonic-3",
+    ttsConfigId: "",
+    sttProvider: "deepgram",
+    sttModel: "nova-3",
+    sttConfigId: "",
+  };
 
   const [form, setForm] = useState<FormState>(
-    initialData
-      ? fromData(initialData)
-      : {
-          language: "en-US",
-          sttLanguage: "multi",
-          voiceType: "female-1",
-          ttsVoiceId: "",
-          sttModel: "nova-3",
-          ttsModel: "sonic-3",
-          llmModel: "gemini-2.0-flash",
-        },
+    initialData ? fromData(initialData) : defaultForm,
   );
   const [original, setOriginal] = useState<FormState>(
-    initialData
-      ? fromData(initialData)
-      : {
-          language: "en-US",
-          sttLanguage: "multi",
-          voiceType: "female-1",
-          ttsVoiceId: "",
-          sttModel: "nova-3",
-          ttsModel: "sonic-3",
-          llmModel: "gemini-2.0-flash",
-        },
+    initialData ? fromData(initialData) : defaultForm,
   );
   const [callType, setCallType] = useState<"inbound" | "outbound">(
     initialData?.voiceSettings?.callType ?? "inbound",
@@ -234,7 +609,36 @@ export function VoiceBehaviorTab({
     updatedByName?: string;
   } | null>(null);
 
+  const [savedKeys, setSavedKeys] = useState<SavedKey[]>([]);
+  const [keysLoading, setKeysLoading] = useState(false);
+
   const isDirty = JSON.stringify(form) !== JSON.stringify(original);
+
+  // Load saved provider config keys
+  useEffect(() => {
+    if (!user) return;
+    let mounted = true;
+    setKeysLoading(true);
+    const load = async () => {
+      try {
+        const token = await getIdToken();
+        const res = await fetch("/api/provider-configs", {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        if (!res.ok) return;
+        const data: SavedKey[] = await res.json();
+        if (mounted) setSavedKeys(data);
+      } catch {
+        // silently fail — keys just won't show
+      } finally {
+        if (mounted) setKeysLoading(false);
+      }
+    };
+    void load();
+    return () => {
+      mounted = false;
+    };
+  }, [user]);
 
   useEffect(() => {
     if (initialData) return;
@@ -256,7 +660,7 @@ export function VoiceBehaviorTab({
         if (mounted) setLoading(false);
       }
     };
-    load();
+    void load();
     return () => {
       mounted = false;
     };
@@ -276,6 +680,40 @@ export function VoiceBehaviorTab({
   const set = <K extends keyof FormState>(k: K, v: FormState[K]) =>
     setForm((prev) => ({ ...prev, [k]: v }));
 
+  // When provider changes, reset model to that provider's first model
+  const handleLlmProviderChange = (v: string) => {
+    const prov = v as LlmProvider;
+    const models = LLM_PROVIDERS.find((p) => p.value === prov)?.models ?? [];
+    setForm((prev) => ({
+      ...prev,
+      llmProvider: prov,
+      llmModel: models[0]?.value ?? prev.llmModel,
+      llmConfigId: "",
+    }));
+  };
+
+  const handleTtsProviderChange = (v: string) => {
+    const prov = v as TtsProvider;
+    const models = TTS_PROVIDERS.find((p) => p.value === prov)?.models ?? [];
+    setForm((prev) => ({
+      ...prev,
+      ttsProvider: prov,
+      ttsModel: models[0]?.value ?? prev.ttsModel,
+      ttsConfigId: "",
+    }));
+  };
+
+  const handleSttProviderChange = (v: string) => {
+    const prov = v as SttProvider;
+    const models = STT_PROVIDERS.find((p) => p.value === prov)?.models ?? [];
+    setForm((prev) => ({
+      ...prev,
+      sttProvider: prov,
+      sttModel: models[0]?.value ?? prev.sttModel,
+      sttConfigId: "",
+    }));
+  };
+
   const doSave = async (force = false) => {
     setSaving(true);
     const voiceSettings: Partial<WritableVoiceSettings> = {
@@ -283,19 +721,30 @@ export function VoiceBehaviorTab({
       sttLanguage: form.sttLanguage,
       voiceType: form.voiceType,
       ttsVoiceId: form.ttsVoiceId || undefined,
-      sttModel: form.sttModel,
-      ttsModel: form.ttsModel,
+      llmProvider: form.llmProvider,
       llmModel: form.llmModel,
+      llmConfigId: form.llmConfigId || undefined,
+      ttsProvider: form.ttsProvider,
+      ttsModel: form.ttsModel,
+      ttsConfigId: form.ttsConfigId || undefined,
+      sttProvider: form.sttProvider,
+      sttModel: form.sttModel,
+      sttConfigId: form.sttConfigId || undefined,
     };
+
+    const userId = user?.uid;
 
     try {
       const res = await fetch(`/api/agents/${agentKey}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          payload: { voiceSettings },
-          updatedBy: "system",
-          updatedByName: "App User",
+          payload: {
+            voiceSettings,
+            ...(userId ? { userId } : {}),
+          },
+          updatedBy: user?.uid ?? "system",
+          updatedByName: user?.displayName ?? user?.email ?? "App User",
           updatedAt: serverUpdatedAt,
           force,
         }),
@@ -372,6 +821,16 @@ export function VoiceBehaviorTab({
     );
   }
 
+  const llmProviderObj = LLM_PROVIDERS.find(
+    (p) => p.value === form.llmProvider,
+  )!;
+  const ttsProviderObj = TTS_PROVIDERS.find(
+    (p) => p.value === form.ttsProvider,
+  )!;
+  const sttProviderObj = STT_PROVIDERS.find(
+    (p) => p.value === form.sttProvider,
+  )!;
+
   return (
     <>
       {conflict && (
@@ -414,65 +873,86 @@ export function VoiceBehaviorTab({
           </span>
         </div>
 
-        {/* Core voice settings */}
-        <div className="bg-card border border-border rounded-xl p-5 flex flex-col gap-5">
-          <h3 className="text-xs font-semibold text-foreground uppercase tracking-wide">
-            Voice
-          </h3>
-
-          <FieldRow
-            label="Language"
-            helper="Language the agent speaks with callers."
-          >
-            <SelectField
-              value={form.language}
-              onChange={(v) => set("language", v)}
-              options={LANGUAGE_OPTIONS}
-            />
-          </FieldRow>
-
-          <FieldRow
-            label="Voice type"
-            helper="Personality of the synthesised voice."
-          >
-            <SelectField
-              value={form.voiceType}
-              onChange={(v) => set("voiceType", v)}
-              options={VOICE_TYPE_OPTIONS}
-            />
-          </FieldRow>
-
-          <FieldRow
-            label="Voice ID"
-            helper="Specific voice UUID from your TTS provider. Leave blank to use the default for the selected type."
-          >
-            <TextInput
-              value={form.ttsVoiceId}
-              onChange={(v) => set("ttsVoiceId", v)}
-              placeholder="e.g. a0e99841-438c-4a64-b679-ae501e7d6091"
-            />
-          </FieldRow>
-
-          <FieldRow
-            label="Speech recognition language"
-            helper="Language the speech-to-text engine listens for. Multi-language auto-detects."
-          >
-            <SelectField
-              value={form.sttLanguage}
-              onChange={(v) => set("sttLanguage", v)}
-              options={STT_LANGUAGE_OPTIONS}
-            />
-          </FieldRow>
+        {/* LLM */}
+        <div className="bg-card border border-border rounded-xl p-5">
+          <ProviderSection
+            title="Language model (LLM)"
+            providerValue={form.llmProvider}
+            providerOptions={LLM_PROVIDERS.map((p) => ({
+              value: p.value,
+              label: p.label,
+            }))}
+            onProviderChange={handleLlmProviderChange}
+            modelValue={form.llmModel}
+            modelOptions={llmProviderObj.models}
+            onModelChange={(v) => set("llmModel", v)}
+            configId={form.llmConfigId}
+            onConfigIdChange={(v) => set("llmConfigId", v)}
+            savedKeys={keysLoading ? [] : savedKeys}
+            onKeySaved={(k) => setSavedKeys((prev) => [k, ...prev])}
+            onKeyDeleted={(id) =>
+              setSavedKeys((prev) => prev.filter((k) => k.id !== id))
+            }
+            providerKey={form.llmProvider}
+          />
         </div>
 
-        {/* Advanced settings (power-user) */}
+        {/* TTS */}
+        <div className="bg-card border border-border rounded-xl p-5">
+          <ProviderSection
+            title="Text-to-speech (TTS)"
+            providerValue={form.ttsProvider}
+            providerOptions={TTS_PROVIDERS.map((p) => ({
+              value: p.value,
+              label: p.label,
+            }))}
+            onProviderChange={handleTtsProviderChange}
+            modelValue={form.ttsModel}
+            modelOptions={ttsProviderObj.models}
+            onModelChange={(v) => set("ttsModel", v)}
+            configId={form.ttsConfigId}
+            onConfigIdChange={(v) => set("ttsConfigId", v)}
+            savedKeys={keysLoading ? [] : savedKeys}
+            onKeySaved={(k) => setSavedKeys((prev) => [k, ...prev])}
+            onKeyDeleted={(id) =>
+              setSavedKeys((prev) => prev.filter((k) => k.id !== id))
+            }
+            providerKey={form.ttsProvider}
+          />
+        </div>
+
+        {/* STT */}
+        <div className="bg-card border border-border rounded-xl p-5">
+          <ProviderSection
+            title="Speech-to-text (STT)"
+            providerValue={form.sttProvider}
+            providerOptions={STT_PROVIDERS.map((p) => ({
+              value: p.value,
+              label: p.label,
+            }))}
+            onProviderChange={handleSttProviderChange}
+            modelValue={form.sttModel}
+            modelOptions={sttProviderObj.models}
+            onModelChange={(v) => set("sttModel", v)}
+            configId={form.sttConfigId}
+            onConfigIdChange={(v) => set("sttConfigId", v)}
+            savedKeys={keysLoading ? [] : savedKeys}
+            onKeySaved={(k) => setSavedKeys((prev) => [k, ...prev])}
+            onKeyDeleted={(id) =>
+              setSavedKeys((prev) => prev.filter((k) => k.id !== id))
+            }
+            providerKey={form.sttProvider}
+          />
+        </div>
+
+        {/* Voice & Language (advanced) */}
         <div className="bg-card border border-border rounded-xl overflow-hidden">
           <button
             onClick={() => setShowAdvanced((v) => !v)}
             className="w-full flex items-center justify-between px-5 py-3.5 text-left hover:bg-muted/30 transition-colors"
           >
             <span className="text-xs font-semibold text-foreground uppercase tracking-wide">
-              Advanced
+              Voice & Language
             </span>
             {showAdvanced ? (
               <ChevronUp className="size-4 text-muted-foreground" />
@@ -483,41 +963,47 @@ export function VoiceBehaviorTab({
 
           {showAdvanced && (
             <div className="px-5 pb-5 flex flex-col gap-5 border-t border-border pt-5">
-              <p className="text-xs text-muted-foreground">
-                These settings affect model selection. Changing them may impact
-                latency and cost.
-              </p>
-
               <FieldRow
-                label="STT model"
-                helper="Speech-to-text model (e.g. nova-3, nova-2)."
+                label="Language"
+                helper="Language the agent speaks with callers."
               >
-                <TextInput
-                  value={form.sttModel}
-                  onChange={(v) => set("sttModel", v)}
-                  placeholder="nova-3"
+                <SelectField
+                  value={form.language}
+                  onChange={(v) => set("language", v)}
+                  options={LANGUAGE_OPTIONS}
                 />
               </FieldRow>
 
               <FieldRow
-                label="TTS model"
-                helper="Text-to-speech model (e.g. sonic-3, sonic-2)."
+                label="Voice type"
+                helper="Personality of the synthesised voice."
               >
-                <TextInput
-                  value={form.ttsModel}
-                  onChange={(v) => set("ttsModel", v)}
-                  placeholder="sonic-3"
+                <SelectField
+                  value={form.voiceType}
+                  onChange={(v) => set("voiceType", v)}
+                  options={VOICE_TYPE_OPTIONS}
                 />
               </FieldRow>
 
               <FieldRow
-                label="LLM model"
-                helper="Language model used for reasoning (e.g. gemini-2.0-flash)."
+                label="Voice ID"
+                helper="Specific voice UUID from your TTS provider. Leave blank to use the default for the selected type."
               >
                 <TextInput
-                  value={form.llmModel}
-                  onChange={(v) => set("llmModel", v)}
-                  placeholder="gemini-2.0-flash"
+                  value={form.ttsVoiceId}
+                  onChange={(v) => set("ttsVoiceId", v)}
+                  placeholder="e.g. a0e99841-438c-4a64-b679-ae501e7d6091"
+                />
+              </FieldRow>
+
+              <FieldRow
+                label="Speech recognition language"
+                helper="Language the STT engine listens for. Multi-language auto-detects."
+              >
+                <SelectField
+                  value={form.sttLanguage}
+                  onChange={(v) => set("sttLanguage", v)}
+                  options={STT_LANGUAGE_OPTIONS}
                 />
               </FieldRow>
             </div>

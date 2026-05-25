@@ -2,7 +2,9 @@ import type { Metadata } from "next";
 import { Inter, Geist_Mono } from "next/font/google";
 import "./globals.css";
 import { AppLayout } from "@/components/AppLayout";
+import { AuthProvider } from "@/contexts/AuthContext";
 import { listAgents } from "@/lib/firebase/agents";
+import { cookies } from "next/headers";
 
 const inter = Inter({
   variable: "--font-inter",
@@ -25,12 +27,15 @@ export default async function RootLayout({
 }: Readonly<{
   children: React.ReactNode;
 }>) {
-  const agentList = await listAgents();
+  const uid = (await cookies()).get("__uid")?.value;
+  const agentList = await listAgents(uid);
 
   return (
     <html lang="en">
       <body className={`${inter.variable} ${geistMono.variable} antialiased`}>
-        <AppLayout agents={agentList}>{children}</AppLayout>
+        <AuthProvider>
+          <AppLayout agents={agentList}>{children}</AppLayout>
+        </AuthProvider>
       </body>
     </html>
   );

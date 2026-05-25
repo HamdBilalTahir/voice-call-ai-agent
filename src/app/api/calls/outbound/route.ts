@@ -4,6 +4,7 @@ import { z } from "zod";
 import { SipClient, AgentDispatchClient } from "livekit-server-sdk";
 import { getAgent } from "@/lib/firebase/agents";
 import { buildDispatchMetadata } from "@/lib/agents/promptBuilder";
+import { resolveProviderKeys } from "@/lib/firebase/resolveProviderKeys";
 
 const sipClient = new SipClient(
   process.env.LIVEKIT_URL!,
@@ -111,7 +112,8 @@ export async function POST(req: Request) {
         const agentData = await getAgent(agentKey);
         if (agentData) {
           dispatchRule = agentData.dispatchRuleName || dispatchRule;
-          dispatchMetadata = buildDispatchMetadata(agentData);
+          const resolvedKeys = await resolveProviderKeys(agentData);
+          dispatchMetadata = buildDispatchMetadata(agentData, {}, resolvedKeys);
         }
       } catch (err) {
         console.error(

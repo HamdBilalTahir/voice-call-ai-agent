@@ -1,3 +1,79 @@
+## 🗓️ **2026-05-25**
+
+---
+
+### 🗄️ Data & Infrastructure
+
+---
+
+> ### Agents — `userId` Foreign Key + User-Scoped Fetching
+>
+> - **What changed:** Dynamic agents now always store a `userId` field (the Firebase Auth UID of the creating user) as a top-level Firestore field alongside all other agent data. `userId` is a required param in `CreateAgentParams` — `createAgent()` writes it unconditionally. `POST /api/agents` now requires a valid Bearer token; it returns 401 if the token is absent or invalid, and extracts `userId` from the verified token to pass to `createAgent`. `WelcomeModal` fetches the ID token via `getIdToken()` and sends it in the `Authorization: Bearer` header when calling `POST /api/agents`. `listAgents(uid?)` was updated to accept an optional `uid` — when provided, dynamic agents whose `userId` field doesn't match are excluded from the result. The server-side `layout.tsx` reads a `__uid` cookie (set by `AuthContext` on sign-in) and passes it to `listAgents(uid)` so the sidebar only shows the signed-in user's agents. `GET /api/agents` similarly verifies the Bearer token and scopes results. `AuthContext` now sets a `__uid` cookie alongside `__session` on sign-in and clears it on sign-out. The field was also renamed from `ownerUid` → `userId` throughout (`AgentFirestoreDoc`, `AgentFullData`, `TIER1_FIELD_LIST`, `AgentWriteSchema`, `resolveProviderKeys.ts`, `VoiceBehaviorTab.tsx`).
+> - **Why:** Without `userId` on agent documents, all dynamically created agents were visible to every authenticated user regardless of who created them. The foreign key makes the data model multi-tenant-ready and is the prerequisite for per-user billing, quotas, and team-based access control.
+> - **Files:**
+>   - `src/lib/firebase/agents.ts` _(userId required in CreateAgentParams; always written in createAgent; listAgents(uid?) filter; rename ownerUid→userId throughout)_
+>   - `src/app/api/agents/route.ts` _(POST requires auth, 401 on missing token, passes userId; GET scopes by verified token)_
+>   - `src/components/WelcomeModal.tsx` _(sends Authorization: Bearer header on agent creation)_
+>   - `src/contexts/AuthContext.tsx` _(\_\_uid cookie set/clear on sign-in/sign-out)_
+>   - `src/app/layout.tsx` _(reads \_\_uid cookie, passes to listAgents)_
+>   - `src/lib/firebase/resolveProviderKeys.ts` _(reads agentData.userId)_
+>   - `src/components/VoiceBehaviorTab.tsx` _(saves userId in patch payload)_
+
+---
+
+### 🐛 Fixes
+
+---
+
+> ### Sidebar & Profile — displayName Read from Firestore Instead of Firebase Auth
+>
+> - **What changed:** `AuthContext` now exports a `profile` object (`{ displayName, email, photoURL }`) fetched from the `userProfile/{uid}` Firestore document immediately after sign-in. The previous `createUserProfileIfMissing()` helper was replaced by `ensureUserProfile()` which returns the Firestore data if the doc already exists, or creates it and returns the new data if not. `AuthContextValue` is extended with `profile: UserProfile | null`. `Sidebar` was updated to use `profile?.displayName` (initials calculation and display name row) instead of `user?.displayName`. The collapsed avatar initials (previously hardcoded `"AJ"`) now also derive from `profile?.displayName`. `settings/profile/page.tsx` pre-fills the name field from `profile?.displayName`.
+> - **Why:** `user.displayName` on the Firebase Auth object is `null` for email/password and magic-link sign-ins — Firebase Auth only auto-populates it for Google OAuth. The `userProfile` Firestore document had the correct `displayName` value, but the Sidebar was reading the wrong source, causing it to always display "—".
+> - **Files:**
+>   - `src/contexts/AuthContext.tsx` _(ensureUserProfile, UserProfile interface, profile in context value)_
+>   - `src/components/Sidebar.tsx` _(profile?.displayName in display name row and initials)_
+>   - `src/app/settings/profile/page.tsx` _(profile?.displayName pre-fill)_
+
+---
+
+### ✨ Features
+
+---
+
+> ### Provider / Model / API Key Configuration System
+>
+> - **What changed:** Added per-agent LLM, TTS, and STT provider + model selection. Users choose a provider (LLM: Google Gemini or OpenAI; TTS: ElevenLabs or Cartesia; STT: Deepgram) and a model within that provider, each backed by an API key stored in a `userProfile/{uid}/providerConfigs` Firestore subcollection. **`ApiKeyPicker`** inside `VoiceBehaviorTab` shows a dropdown of all saved keys for the selected provider — users can pick an existing key or type a new one inline; new keys are auto-saved on use. Raw API keys are never returned to the browser: only a `maskedKey` (e.g. `sk-p...bc12`) is exposed in GET responses. At call-dispatch time, `resolveProviderKeys()` (server-side) reads the `llmConfigId`, `ttsConfigId`, and `sttConfigId` stored on the agent, fetches the raw keys from Firestore, and injects them into the LiveKit dispatch metadata via `buildDispatchMetadata()`. The worker (`genericEntry.ts`) branches on `llmProvider` (`google.LLM` vs `openai.LLM`) and `ttsProvider` (`elevenlabs.TTS` vs `cartesia.TTS`), falling back to env vars when keys are absent from metadata. `VoiceBehaviorTab` saves `ownerUid: user?.uid` on agent writes so `resolveProviderKeys` can scope lookups to the correct user's subcollection. Voice & Language section collapsed by default.
+> - **Why:** Previously all API keys were global env vars and agents had no way to use per-user or per-agent provider credentials. This makes the product multi-tenant-ready and lets users bring their own provider keys without touching environment configuration.
+> - **Files:**
+>   - `src/lib/firebase/providerConfigs.ts` _(new — CRUD for providerConfigs subcollection, maskedKey, verifyToken)_
+>   - `src/lib/firebase/resolveProviderKeys.ts` _(new — resolves configIds to raw keys at dispatch time)_
+>   - `src/app/api/provider-configs/route.ts` _(new — GET/POST, Bearer auth)_
+>   - `src/app/api/provider-configs/[configId]/route.ts` _(new — DELETE, Bearer auth)_
+>   - `src/lib/firebase/agents.ts` _(LlmProvider, TtsProvider, SttProvider types; llmConfigId/ttsConfigId/sttConfigId on VoiceSettings; ownerUid on AgentFirestoreDoc/AgentFullData)_
+>   - `src/lib/firebase/admin.ts` _(getAdminApp exported)_
+>   - `src/lib/agents/promptBuilder.ts` _(ResolvedProviderKeys interface; buildDispatchMetadata accepts resolved keys)_
+>   - `src/lib/agents/genericEntry.ts` _(OpenAI + Cartesia provider branches; buildSTT accepts optional apiKey)_
+>   - `src/components/VoiceBehaviorTab.tsx` _(complete overhaul — ProviderSection, ApiKeyPicker, ownerUid on save)_
+>   - `src/app/api/calls/test/route.ts` _(resolveProviderKeys before buildDispatchMetadata)_
+>   - `src/app/api/calls/outbound/route.ts` _(resolveProviderKeys before buildDispatchMetadata)_
+
+---
+
+> ### Firebase Auth — Google OAuth, Email/Password, Magic Link + Route Protection
+>
+> - **What changed:** Wired Firebase Authentication end-to-end. Login page (`/login`) supports three methods: **Google OAuth** (one-click), **Magic link** (passwordless, default tab — sends a `sendSignInLinkToEmail` link; handles cross-device flow by prompting for email confirmation when localStorage is absent on the return device), and **Email/Password** (sign-up and sign-in on the same form). On sign-in the `AuthContext` sets a `__session` cookie; on sign-out it clears it. A Next.js Edge middleware (`middleware.ts`) reads the cookie on every request and redirects unauthenticated users to `/login` for any non-public path. `AppLayout` skips the sidebar/topbar when the pathname is `/login`. `userProfile/{uid}` is created in Firestore only on first ever sign-in for any auth method; subsequent sign-ins skip the write. Sidebar and profile page display the real authenticated user's name and email from the Auth context.
+> - **Why:** The product had no authentication — any visitor could access any route and all data was shared globally. Firebase Auth provides a battle-tested identity layer; the cookie + Edge middleware pattern ensures unauthenticated users are redirected server-side before any page content renders.
+> - **Files:**
+>   - `src/contexts/AuthContext.tsx` _(new — onAuthStateChanged, session cookie, createUserProfileIfMissing, signOut)_
+>   - `src/lib/firebase/client.ts` _(new — Firebase app init, auth and db exports)_
+>   - `middleware.ts` _(new — Edge middleware, \_\_session cookie check, public path allowlist)_
+>   - `src/app/login/page.tsx` _(new — Google, magic link, email/password; cross-device confirmation flow)_
+>   - `src/components/AppLayout.tsx` _(skip sidebar on /login)_
+>   - `src/components/Sidebar.tsx` _(real user data, working sign-out)_
+>   - `src/app/settings/profile/page.tsx` _(name/email from useAuth)_
+
+---
+
 ## 🗓️ **2026-05-24**
 
 ---
