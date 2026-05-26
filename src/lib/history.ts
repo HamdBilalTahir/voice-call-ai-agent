@@ -43,6 +43,7 @@ export interface CallRecord {
   tags?: string[];
   archived?: boolean;
   usage?: CallUsage;
+  pipelineMode?: "cascading" | "live_api";
 }
 
 function toFirestore(
@@ -81,27 +82,43 @@ export async function getAgentCallHistory(
 }
 
 // Firestore generates the doc ID. `record.id` is NOT stored; `roomName` is.
-export async function addCallRecord(record: CallRecord): Promise<void> {
-  await col().add({
+// Returns the auto-generated Firestore doc ID so callers can use it as a foreign key.
+export async function addCallRecord(record: CallRecord): Promise<string> {
+  const ref = await col().add({
     ...toFirestore(record),
     agentId: record.agentKey,
     createdAt: FieldValue.serverTimestamp(),
   });
+  return ref.id;
 }
 
 // Update by roomName field (webhook path).
 export async function updateCallRecord(
   roomName: string,
   updates: Partial<CallRecord>,
+  opts?: { createIfMissing?: boolean },
 ): Promise<void> {
+  const data = toFirestore(updates);
+  if (Object.keys(data).length === 0) return;
   const snap = await col().where("roomName", "==", roomName).limit(1).get();
   if (snap.empty) {
-    console.warn(
-      `[history] updateCallRecord: no doc with roomName=${roomName}`,
-    );
+    if (opts?.createIfMissing) {
+      await col().add({
+        roomName,
+        startTime: Date.now(),
+        status: "in-progress",
+        agentKey: "",
+        ...data,
+        createdAt: FieldValue.serverTimestamp(),
+      });
+    } else {
+      console.warn(
+        `[history] updateCallRecord: no doc with roomName=${roomName}`,
+      );
+    }
     return;
   }
-  await snap.docs[0].ref.update(toFirestore(updates));
+  await snap.docs[0].ref.update(data);
 }
 
 // Update by Firestore doc ID (UI bulk-archive path).

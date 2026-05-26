@@ -3,6 +3,7 @@ import path from "path";
 import { NextResponse } from "next/server";
 import { verifyLiveKitWebhook } from "@/lib/livekit";
 import { getCallRecord, updateCallRecord, type CallUsage } from "@/lib/history";
+import { killWorkerForRoom } from "@/app/api/calls/outbound/route";
 
 export async function POST(req: Request) {
   try {
@@ -33,14 +34,18 @@ export async function POST(req: Request) {
       ? json.room.creation_time * 1000
       : undefined;
 
-    if (event === "room_started" && roomName) {
-      // Record the exact time LiveKit considers the call to have started
-      await updateCallRecord(roomName, {
-        ...(lkCreationTime ? { callStartedAt: lkCreationTime } : {}),
-      });
+    if (event === "room_started" && roomName && lkCreationTime) {
+      // Record the exact time LiveKit considers the call to have started.
+      // createIfMissing handles inbound calls where no record was pre-created.
+      await updateCallRecord(
+        roomName,
+        { callStartedAt: lkCreationTime },
+        { createIfMissing: true },
+      );
     }
 
     if (event === "room_finished" && roomName) {
+      killWorkerForRoom(roomName);
       const callEndedAt = Date.now();
       const record = await getCallRecord(roomName);
       if (record && record.status === "in-progress") {

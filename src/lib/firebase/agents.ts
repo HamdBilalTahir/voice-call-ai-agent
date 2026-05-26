@@ -85,6 +85,11 @@ export interface VoiceSettings {
   ttsConfigId?: string;
   sttProvider?: SttProvider;
   sttConfigId?: string;
+  // Gemini Live API — replaces the STT→LLM→TTS pipeline when enabled
+  useLiveApi?: boolean;
+  liveApiModel?: string;
+  liveApiVoice?: string;
+  liveApiConfigId?: string;
 }
 
 /** Raw Firestore document shape — unknown extra fields are preserved via index sig */
@@ -105,6 +110,8 @@ export interface AgentFirestoreDoc {
   updatedBy?: string;
   updatedByName?: string;
   userId?: string;
+  // Denormalized from config/voice subcollection — used by listAgents() for sidebar
+  useLiveApi?: boolean;
   // Dynamic-agent fields (set on creation, read-only after)
   isDynamic?: boolean;
   direction?: string;
@@ -194,6 +201,10 @@ const VoiceSettingsWriteSchema = z
     ttsConfigId: z.string().max(128).optional(),
     sttProvider: z.enum(["deepgram"]).optional(),
     sttConfigId: z.string().max(128).optional(),
+    useLiveApi: z.boolean().optional(),
+    liveApiModel: z.string().min(1).max(100).optional(),
+    liveApiVoice: z.string().min(1).max(100).optional(),
+    liveApiConfigId: z.string().min(1).max(128).optional(),
   })
   .strict();
 
@@ -245,6 +256,8 @@ function mergeAgentData(
     name: doc.name ?? config.name,
     description: doc.description ?? config.description,
     voiceEnabled: doc.voiceEnabled ?? false,
+    // useLiveApi is denormalized to the parent doc for fast sidebar listing
+    useLiveApi: doc.useLiveApi ?? doc.voiceSettings?.useLiveApi ?? false,
     roleAndResponsibilities: doc.roleAndResponsibilities ?? "",
     personaLanguageAndTone: doc.personaLanguageAndTone ?? "",
     mistakesToAvoid: doc.mistakesToAvoid ?? "",
@@ -320,22 +333,47 @@ export async function getAgent(
   try {
     const db = getDb();
     const docRef = db.collection("agents").doc(agentKey);
-    const snap = await docRef.get();
+    const [snap, configSnap, statusSnap] = await Promise.all([
+      docRef.get(),
+      docRef.collection("config").doc("voice").get(),
+      docRef.collection("status").doc("current").get(),
+    ]);
+
+    const rawData = snap.exists ? (snap.data() as AgentFirestoreDoc) : {};
+
+    // config/voice subcollection is the source of truth; parent doc voiceSettings
+    // is a backward-compat fallback for agents not yet written with new code.
+    const configVoiceData = configSnap.exists
+      ? (configSnap.data() as Partial<VoiceSettings>)
+      : null;
+
+    // status/current subcollection is the source of truth for voiceEnabled;
+    // parent doc voiceEnabled is backward-compat fallback.
+    const statusData = statusSnap.exists
+      ? (statusSnap.data() as { voiceEnabled?: boolean })
+      : null;
+
+    const firestoreData: AgentFirestoreDoc = {
+      ...rawData,
+      ...(configVoiceData && {
+        voiceSettings: { ...(rawData.voiceSettings ?? {}), ...configVoiceData },
+      }),
+      ...(statusData && { voiceEnabled: statusData.voiceEnabled }),
+    };
 
     // For dynamic agents not in the static registry, build config from Firestore
-    const firestoreData = snap.exists ? (snap.data() as AgentFirestoreDoc) : {};
+    // Use rawData (parent doc) for structural fields — direction, name, etc.
     const effectiveConfig: AgentConfig =
       config ??
-      (firestoreData.isDynamic
+      (rawData.isDynamic
         ? {
             key: agentKey,
-            direction:
-              (firestoreData.direction as AgentDirection) ?? "outbound",
-            name: firestoreData.name ?? agentKey,
-            language: firestoreData.language ?? "en",
-            dispatchRuleName: firestoreData.dispatchRuleName ?? "",
-            phoneNumber: firestoreData.phoneNumber ?? "",
-            description: firestoreData.description ?? "",
+            direction: (rawData.direction as AgentDirection) ?? "outbound",
+            name: rawData.name ?? agentKey,
+            language: rawData.language ?? "en",
+            dispatchRuleName: rawData.dispatchRuleName ?? "",
+            phoneNumber: rawData.phoneNumber ?? "",
+            description: rawData.description ?? "",
           }
         : null);
 
@@ -396,7 +434,7 @@ export interface CreateAgentParams {
   name: string;
   direction: "inbound" | "outbound";
   language: string;
-  dispatchRuleName: string;
+  dispatchRuleName?: string;
   description: string;
   roleAndResponsibilities: string;
   personaLanguageAndTone?: string;
@@ -405,6 +443,11 @@ export interface CreateAgentParams {
   voiceGreeting?: string;
   industry?: string;
   userId: string;
+  // Optional initial Live API settings
+  useLiveApi?: boolean;
+  liveApiModel?: string;
+  liveApiVoice?: string;
+  liveApiConfigId?: string;
 }
 
 function slugify(s: string): string {
@@ -423,28 +466,52 @@ export async function createAgent(
   try {
     const db = getDb();
     const slug = slugify(params.name);
-    const docRef = await db.collection("agents").add({
+    const voiceSettings: VoiceSettings = {
+      ...defaultVoiceSettings(params.direction),
+      ...(params.useLiveApi !== undefined && { useLiveApi: params.useLiveApi }),
+      ...(params.liveApiModel !== undefined && {
+        liveApiModel: params.liveApiModel,
+      }),
+      ...(params.liveApiVoice !== undefined && {
+        liveApiVoice: params.liveApiVoice,
+      }),
+      ...(params.liveApiConfigId !== undefined && {
+        liveApiConfigId: params.liveApiConfigId,
+      }),
+    };
+    const dispatchRuleName = params.dispatchRuleName || slug;
+    const docRef = db.collection("agents").doc();
+    const batch = db.batch();
+    batch.set(docRef, {
       isDynamic: true,
       slug,
       name: params.name,
       description: params.description,
       direction: params.direction,
       language: params.language,
-      dispatchRuleName: params.dispatchRuleName,
+      dispatchRuleName,
       phoneNumber: "",
       roleAndResponsibilities: params.roleAndResponsibilities,
       personaLanguageAndTone: params.personaLanguageAndTone ?? "",
       mistakesToAvoid: params.mistakesToAvoid ?? "",
       additionalInstructions: params.additionalInstructions ?? "",
       voiceGreeting: params.voiceGreeting ?? "",
-      voiceEnabled: false,
-      voiceSettings: defaultVoiceSettings(params.direction),
+      voiceEnabled: false, // denormalized for listAgents()
+      useLiveApi: voiceSettings.useLiveApi ?? false, // denormalized for listAgents()
       tools: [],
       industry: params.industry ?? "other",
       userId: params.userId,
       createdAt: FieldValue.serverTimestamp(),
       updatedAt: FieldValue.serverTimestamp(),
     });
+    // voiceSettings live in the config/voice subcollection
+    batch.set(docRef.collection("config").doc("voice"), voiceSettings);
+    // initial live status
+    batch.set(docRef.collection("status").doc("current"), {
+      voiceEnabled: false,
+      updatedAt: FieldValue.serverTimestamp(),
+    });
+    await batch.commit();
     // Write the Firestore-generated doc ID back as the `key` field
     await docRef.update({ key: docRef.id });
     return { ok: true, key: docRef.id };
@@ -510,28 +577,40 @@ export async function updateAgentConfig(
       }
     }
 
-    // Build the safe write object — only TIER1 fields + audit meta
-    const writeData: Record<string, unknown> = {
+    // Split fields: voiceSettings go to the config/voice subcollection;
+    // everything else goes to the parent agent doc.
+    const parentData: Record<string, unknown> = {
       updatedAt: FieldValue.serverTimestamp(),
       updatedBy: meta.updatedBy,
       updatedByName: meta.updatedByName,
     };
+    const configVoiceData: Record<string, unknown> = {};
 
     for (const [k, v] of Object.entries(parsed)) {
       if (TIER1_WRITE_FIELDS.has(k)) {
         if (k === "voiceSettings" && v && typeof v === "object") {
-          // Merge sub-fields to avoid overwriting callType (read-only)
           for (const [sk, sv] of Object.entries(v)) {
-            writeData[`voiceSettings.${sk}`] = sv;
+            configVoiceData[sk] = sv;
           }
         } else {
-          writeData[k] = v;
+          parentData[k] = v;
         }
       }
     }
 
-    // update() is a partial write — unknown Firestore fields are preserved
-    await docRef.set(writeData, { merge: true });
+    // Denormalize useLiveApi to the parent doc so listAgents() can read it
+    // without an extra subcollection fetch per agent.
+    if ("useLiveApi" in configVoiceData) {
+      parentData.useLiveApi = configVoiceData.useLiveApi;
+    }
+
+    const batch = db.batch();
+    batch.set(docRef, parentData, { merge: true });
+    if (Object.keys(configVoiceData).length > 0) {
+      const configRef = docRef.collection("config").doc("voice");
+      batch.set(configRef, configVoiceData, { merge: true });
+    }
+    await batch.commit();
 
     // Read back the new updatedAt
     const updated = await docRef.get();
@@ -548,18 +627,21 @@ export async function updateAgentConfig(
 
 /**
  * Toggles voiceEnabled for an agent (optimistic-update path — no stale check).
+ * Source of truth: agents/{agentKey}/status/current
+ * Denormalized to parent doc for fast sidebar listing.
  */
 export async function setAgentLiveStatus(
   agentKey: string,
   voiceEnabled: boolean,
   meta: { updatedBy: string; updatedByName: string },
 ): Promise<{ ok: true; updatedAt: number } | { ok: false; error: string }> {
-  const config = registryAgents[agentKey];
-  if (!config) return { ok: false, error: "Agent not found" };
-
   try {
     const db = getDb();
-    await db.collection("agents").doc(agentKey).set(
+    const docRef = db.collection("agents").doc(agentKey);
+    const batch = db.batch();
+    // Source of truth
+    batch.set(
+      docRef.collection("status").doc("current"),
       {
         voiceEnabled,
         updatedAt: FieldValue.serverTimestamp(),
@@ -568,6 +650,18 @@ export async function setAgentLiveStatus(
       },
       { merge: true },
     );
+    // Denormalized to parent doc so listAgents() sidebar dot stays accurate
+    batch.set(
+      docRef,
+      {
+        voiceEnabled,
+        updatedAt: FieldValue.serverTimestamp(),
+        updatedBy: meta.updatedBy,
+        updatedByName: meta.updatedByName,
+      },
+      { merge: true },
+    );
+    await batch.commit();
     return { ok: true, updatedAt: Date.now() };
   } catch (err) {
     console.error("[firebase/agents] setAgentLiveStatus failed:", err);

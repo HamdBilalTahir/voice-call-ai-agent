@@ -23,6 +23,9 @@
 # agent usage files (written per-call, data is persisted to Firestore)
 /.agent-usage/
 
+# agent PID files (runtime process tracking)
+/.agent-pids/
+
 # misc
 .DS_Store
 *.pem
@@ -44,3 +47,6 @@ yarn-error.log*
 next-env.d.ts
 
 
+
+# worker PID files (runtime process tracking)
+/.worker-pids/

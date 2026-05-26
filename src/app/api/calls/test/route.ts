@@ -48,11 +48,15 @@ export async function POST(req: Request) {
     // Build dispatch metadata with compiled prompt so the agent worker can
     // serve dynamic instructions without a separate Firestore read at runtime.
     let dispatchMetadata: string | undefined;
+    let pipelineMode: "cascading" | "live_api" = "cascading";
     try {
       const agentData = await getAgent(agentKey);
       if (agentData) {
         const resolvedKeys = await resolveProviderKeys(agentData);
         dispatchMetadata = buildDispatchMetadata(agentData, {}, resolvedKeys);
+        pipelineMode = agentData.voiceSettings?.useLiveApi
+          ? "live_api"
+          : "cascading";
       }
     } catch (err) {
       console.error(
@@ -60,6 +64,7 @@ export async function POST(req: Request) {
         err,
       );
     }
+    console.info("[Pipeline] dispatch", { pipelineMode, agentKey, roomName });
 
     // Add a 5 second timeout to prevent the UI from hanging on "Connecting..." forever
     // if the LiveKit server or dispatch agent is unresponsive
@@ -85,6 +90,7 @@ export async function POST(req: Request) {
         status: "in-progress",
         isPlayground: true,
         testType: "widget",
+        pipelineMode,
       });
     } catch (err) {
       console.error("[calls/test] failed to write call record:", err);

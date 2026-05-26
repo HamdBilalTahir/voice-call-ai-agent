@@ -14,6 +14,8 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { useToast } from "@/components/ui/toast";
 import { useAuth, getIdToken } from "@/contexts/AuthContext";
 import { type AgentFullData, type VoiceSettings } from "@/lib/firebase/agents";
+import { VoicePickerModal } from "@/components/VoicePickerModal";
+import { GeminiVoicePickerModal } from "@/components/GeminiVoicePickerModal";
 
 // ─── Provider / model catalogue ──────────────────────────────────────────────
 
@@ -102,6 +104,18 @@ const STT_LANGUAGE_OPTIONS = [
   { value: "ar", label: "Arabic" },
 ];
 
+const LIVE_API_MODELS = [
+  {
+    value: "gemini-3.1-flash-live-preview",
+    label: "Gemini 3.1 Flash Live (Preview)",
+  },
+  {
+    value: "gemini-live-2.5-flash-native-audio",
+    label: "Gemini 2.5 Flash Native Audio",
+  },
+  { value: "gemini-2.0-flash-exp", label: "Gemini 2.0 Flash (Legacy)" },
+];
+
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 type LlmProvider = "google" | "openai";
@@ -132,6 +146,11 @@ interface FormState {
   sttProvider: SttProvider;
   sttModel: string;
   sttConfigId: string;
+  // Gemini Live API
+  useLiveApi: boolean;
+  liveApiModel: string;
+  liveApiVoice: string;
+  liveApiConfigId: string;
 }
 
 function relativeTime(ts: number): string {
@@ -193,7 +212,7 @@ function ConflictModal({
   );
 }
 
-// ─── FieldRow / SelectField / TextInput ──────────────────────────────────────
+// ─── FieldRow / SelectField ──────────────────────────────────────────────────
 
 function FieldRow({
   label,
@@ -237,26 +256,6 @@ function SelectField({
         </option>
       ))}
     </select>
-  );
-}
-
-function TextInput({
-  value,
-  onChange,
-  placeholder,
-}: {
-  value: string;
-  onChange: (v: string) => void;
-  placeholder?: string;
-}) {
-  return (
-    <input
-      type="text"
-      value={value}
-      onChange={(e) => onChange(e.target.value)}
-      placeholder={placeholder}
-      className="h-9 w-full rounded-lg border border-input bg-background px-3 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring"
-    />
   );
 }
 
@@ -570,6 +569,10 @@ export function VoiceBehaviorTab({
       sttProvider: sttProv,
       sttModel,
       sttConfigId: vs?.sttConfigId ?? "",
+      useLiveApi: vs?.useLiveApi ?? false,
+      liveApiModel: vs?.liveApiModel ?? "gemini-live-2.5-flash-native-audio",
+      liveApiVoice: vs?.liveApiVoice ?? "Puck",
+      liveApiConfigId: vs?.liveApiConfigId ?? "",
     };
   };
 
@@ -587,6 +590,10 @@ export function VoiceBehaviorTab({
     sttProvider: "deepgram",
     sttModel: "nova-3",
     sttConfigId: "",
+    useLiveApi: false,
+    liveApiModel: "gemini-2.0-flash-exp",
+    liveApiVoice: "Puck",
+    liveApiConfigId: "",
   };
 
   const [form, setForm] = useState<FormState>(
@@ -611,6 +618,11 @@ export function VoiceBehaviorTab({
 
   const [savedKeys, setSavedKeys] = useState<SavedKey[]>([]);
   const [keysLoading, setKeysLoading] = useState(false);
+  const [showVoicePicker, setShowVoicePicker] = useState(false);
+  const [showGeminiVoicePicker, setShowGeminiVoicePicker] = useState(false);
+  const [selectedVoiceName, setSelectedVoiceName] = useState<string>(
+    initialData?.voiceSettings?.ttsVoiceId ? "Custom voice" : "",
+  );
 
   const isDirty = JSON.stringify(form) !== JSON.stringify(original);
 
@@ -730,6 +742,10 @@ export function VoiceBehaviorTab({
       sttProvider: form.sttProvider,
       sttModel: form.sttModel,
       sttConfigId: form.sttConfigId || undefined,
+      useLiveApi: form.useLiveApi,
+      liveApiModel: form.liveApiModel || undefined,
+      liveApiVoice: form.liveApiVoice || undefined,
+      liveApiConfigId: form.liveApiConfigId || undefined,
     };
 
     const userId = user?.uid;
@@ -833,6 +849,27 @@ export function VoiceBehaviorTab({
 
   return (
     <>
+      {showGeminiVoicePicker && (
+        <GeminiVoicePickerModal
+          value={form.liveApiVoice}
+          configId={form.liveApiConfigId || undefined}
+          onSelect={(voice) => set("liveApiVoice", voice)}
+          onClose={() => setShowGeminiVoicePicker(false)}
+        />
+      )}
+
+      {showVoicePicker && (
+        <VoicePickerModal
+          value={form.ttsVoiceId}
+          configId={form.ttsConfigId || undefined}
+          onSelect={(id, name) => {
+            set("ttsVoiceId", id);
+            setSelectedVoiceName(name);
+          }}
+          onClose={() => setShowVoicePicker(false)}
+        />
+      )}
+
       {conflict && (
         <ConflictModal
           updatedByName={conflict.updatedByName}
@@ -873,8 +910,98 @@ export function VoiceBehaviorTab({
           </span>
         </div>
 
+        {/* Gemini Live API toggle */}
+        <div className="bg-card border border-border rounded-xl px-5 py-4">
+          <div className="flex items-start justify-between gap-4">
+            <div>
+              <p className="text-sm font-medium text-foreground">
+                Use Gemini Live API{" "}
+                <span className="text-xs font-normal text-muted-foreground">
+                  (experimental)
+                </span>
+              </p>
+              <p className="text-xs text-muted-foreground mt-0.5">
+                Replaces the STT → LLM → TTS pipeline with a single Google
+                multimodal model for lower latency.
+              </p>
+            </div>
+            <button
+              type="button"
+              role="switch"
+              aria-checked={form.useLiveApi}
+              aria-label="Use Gemini Live API"
+              onClick={() => set("useLiveApi", !form.useLiveApi)}
+              className={`relative shrink-0 mt-0.5 inline-flex h-5 w-9 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 ${
+                form.useLiveApi ? "bg-primary" : "bg-input"
+              }`}
+            >
+              <span
+                className={`inline-block h-3.5 w-3.5 rounded-full bg-white shadow transition-transform ${
+                  form.useLiveApi ? "translate-x-4" : "translate-x-0.5"
+                }`}
+              />
+            </button>
+          </div>
+
+          {form.useLiveApi && (
+            <div className="mt-4 pt-4 border-t border-border flex flex-col gap-4">
+              <h3 className="text-xs font-semibold text-foreground uppercase tracking-wide">
+                Gemini Live Settings
+              </h3>
+              <div className="grid grid-cols-2 gap-3">
+                <FieldRow label="Model">
+                  <SelectField
+                    value={form.liveApiModel}
+                    onChange={(v) => set("liveApiModel", v)}
+                    options={LIVE_API_MODELS}
+                  />
+                </FieldRow>
+                <FieldRow label="Voice">
+                  <button
+                    type="button"
+                    onClick={() => setShowGeminiVoicePicker(true)}
+                    className="h-9 w-full rounded-lg border border-input bg-background px-3 text-sm text-left focus:outline-none focus:ring-2 focus:ring-ring hover:border-foreground/40 transition-colors"
+                  >
+                    {form.liveApiVoice ? (
+                      <span className="text-foreground">
+                        {form.liveApiVoice}
+                      </span>
+                    ) : (
+                      <span className="text-muted-foreground">
+                        Browse voices…
+                      </span>
+                    )}
+                  </button>
+                </FieldRow>
+              </div>
+              <FieldRow
+                label="API key"
+                helper="Select a saved key or add a new one. Leave blank to use the GEMINI_API_KEY environment variable."
+              >
+                <ApiKeyPicker
+                  provider="google"
+                  value={form.liveApiConfigId}
+                  onChange={(v) => set("liveApiConfigId", v)}
+                  savedKeys={keysLoading ? [] : savedKeys}
+                  onKeySaved={(k) => setSavedKeys((prev) => [k, ...prev])}
+                  onKeyDeleted={(id) =>
+                    setSavedKeys((prev) => prev.filter((k) => k.id !== id))
+                  }
+                />
+              </FieldRow>
+            </div>
+          )}
+        </div>
+
         {/* LLM */}
-        <div className="bg-card border border-border rounded-xl p-5">
+        <div
+          className={`bg-card border border-border rounded-xl p-5 transition-opacity ${form.useLiveApi ? "opacity-40 pointer-events-none select-none" : ""}`}
+        >
+          {form.useLiveApi && (
+            <p className="text-xs text-muted-foreground mb-3 italic">
+              Disabled — Gemini Live API handles the full pipeline.
+            </p>
+          )}
           <ProviderSection
             title="Language model (LLM)"
             providerValue={form.llmProvider}
@@ -898,7 +1025,14 @@ export function VoiceBehaviorTab({
         </div>
 
         {/* TTS */}
-        <div className="bg-card border border-border rounded-xl p-5">
+        <div
+          className={`bg-card border border-border rounded-xl p-5 transition-opacity ${form.useLiveApi ? "opacity-40 pointer-events-none select-none" : ""}`}
+        >
+          {form.useLiveApi && (
+            <p className="text-xs text-muted-foreground mb-3 italic">
+              Disabled — Gemini Live API handles the full pipeline.
+            </p>
+          )}
           <ProviderSection
             title="Text-to-speech (TTS)"
             providerValue={form.ttsProvider}
@@ -922,7 +1056,14 @@ export function VoiceBehaviorTab({
         </div>
 
         {/* STT */}
-        <div className="bg-card border border-border rounded-xl p-5">
+        <div
+          className={`bg-card border border-border rounded-xl p-5 transition-opacity ${form.useLiveApi ? "opacity-40 pointer-events-none select-none" : ""}`}
+        >
+          {form.useLiveApi && (
+            <p className="text-xs text-muted-foreground mb-3 italic">
+              Disabled — Gemini Live API handles the full pipeline.
+            </p>
+          )}
           <ProviderSection
             title="Speech-to-text (STT)"
             providerValue={form.sttProvider}
@@ -986,14 +1127,43 @@ export function VoiceBehaviorTab({
               </FieldRow>
 
               <FieldRow
-                label="Voice ID"
-                helper="Specific voice UUID from your TTS provider. Leave blank to use the default for the selected type."
+                label="Voice"
+                helper="Browse and preview ElevenLabs voices. Only applies when the TTS provider is ElevenLabs."
               >
-                <TextInput
-                  value={form.ttsVoiceId}
-                  onChange={(v) => set("ttsVoiceId", v)}
-                  placeholder="e.g. a0e99841-438c-4a64-b679-ae501e7d6091"
-                />
+                <div className="flex gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setShowVoicePicker(true)}
+                    className="flex-1 h-9 rounded-lg border border-input bg-background px-3 text-sm text-left truncate focus:outline-none focus:ring-2 focus:ring-ring hover:border-foreground/40 transition-colors"
+                  >
+                    {selectedVoiceName ? (
+                      <span className="text-foreground">
+                        {selectedVoiceName}
+                      </span>
+                    ) : form.ttsVoiceId ? (
+                      <span className="text-muted-foreground font-mono text-xs">
+                        {form.ttsVoiceId}
+                      </span>
+                    ) : (
+                      <span className="text-muted-foreground">
+                        Browse voices…
+                      </span>
+                    )}
+                  </button>
+                  {form.ttsVoiceId && (
+                    <button
+                      type="button"
+                      title="Clear voice"
+                      onClick={() => {
+                        set("ttsVoiceId", "");
+                        setSelectedVoiceName("");
+                      }}
+                      className="h-9 px-2.5 rounded-lg border border-border text-muted-foreground hover:text-foreground hover:border-foreground/40 transition-colors text-xs"
+                    >
+                      Clear
+                    </button>
+                  )}
+                </div>
               </FieldRow>
 
               <FieldRow

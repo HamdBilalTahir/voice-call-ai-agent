@@ -43,7 +43,11 @@ export async function PATCH(req: NextRequest, { params }: { params: Params }) {
   const parsed = PatchBodySchema.safeParse(body);
   if (!parsed.success) {
     return NextResponse.json(
-      { error: parsed.error.errors.map((e) => e.message).join("; ") },
+      {
+        error: parsed.error.errors
+          .map((e) => `${e.path.join(".")}: ${e.message}`)
+          .join("; "),
+      },
       { status: 400 },
     );
   }

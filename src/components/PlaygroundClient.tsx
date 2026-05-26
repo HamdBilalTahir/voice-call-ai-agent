@@ -6,12 +6,19 @@ import { useSearchParams } from "next/navigation";
 import {
   LiveKitRoom,
   RoomAudioRenderer,
-  VoiceAssistantControlBar,
+  useVoiceAssistant,
   useRoomContext,
   useLocalParticipant,
 } from "@livekit/components-react";
-import "@livekit/components-styles";
-import { ChevronDown, Copy, Check, Mic, Phone } from "lucide-react";
+import {
+  ChevronDown,
+  Copy,
+  Check,
+  Mic,
+  MicOff,
+  Phone,
+  PhoneOff,
+} from "lucide-react";
 import { AgentConfig } from "@/lib/agents/registry";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -68,9 +75,11 @@ const SECTION_LABELS: Record<keyof PromptSections, string> = {
 
 function TranscriptCapture({
   agentKey,
+  translateEnabled,
   onUpdate,
 }: {
   agentKey: string;
+  translateEnabled?: boolean;
   onUpdate: (lines: TranscriptLine[]) => void;
 }) {
   const room = useRoomContext();
@@ -123,7 +132,7 @@ function TranscriptCapture({
 
       const skipAsInterim = isInterimStream && !isAgent;
       if (
-        agentKey === "restaurant-es" &&
+        translateEnabled &&
         accumulated.length > 2 &&
         !skipAsInterim &&
         !translatedRef.current.has(segmentId)
@@ -143,7 +152,7 @@ function TranscriptCapture({
       mounted = false;
       room.unregisterTextStreamHandler("lk.transcription");
     };
-  }, [room, agentKey, onUpdate]);
+  }, [room, agentKey, onUpdate, translateEnabled]);
 
   return null;
 }
@@ -152,10 +161,10 @@ function TranscriptCapture({
 
 function TranscriptPanel({
   transcript,
-  agentKey,
+  translateEnabled,
 }: {
   transcript: TranscriptLine[];
-  agentKey: string;
+  translateEnabled?: boolean;
 }) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const [copied, setCopied] = useState(false);
@@ -244,7 +253,7 @@ function TranscriptPanel({
                   }`}
                 >
                   {t.text}
-                  {agentKey === "restaurant-es" &&
+                  {translateEnabled &&
                     t.isFinal &&
                     t.text.length > 2 &&
                     t.translation !== "" && (
@@ -364,11 +373,13 @@ function CostPanel({
 
 function WebTestPanel({
   agentKey,
+  translateEnabled,
   onTranscriptUpdate,
   onUsage,
   onCallEnded,
 }: {
   agentKey: string;
+  translateEnabled?: boolean;
   onTranscriptUpdate: (lines: TranscriptLine[]) => void;
   onUsage: (u: UsageData) => void;
   onCallEnded: () => void;
@@ -489,20 +500,104 @@ function WebTestPanel({
         };
         setTimeout(tryFetch, 2000);
       }}
-      data-lk-theme="default"
     >
-      <div className="flex flex-col items-center gap-3 py-8">
-        <div className="size-14 rounded-full bg-accent flex items-center justify-center">
-          <div className="size-10 rounded-full bg-primary animate-pulse flex items-center justify-center">
-            <Mic className="size-5 text-white" />
+      <WebCallWidget />
+      <RoomAudioRenderer />
+      <TranscriptCapture
+        agentKey={agentKey}
+        translateEnabled={translateEnabled}
+        onUpdate={onTranscriptUpdate}
+      />
+    </LiveKitRoom>
+  );
+}
+
+// ---- WebCallWidget ----------------------------------------------------------
+// Rendered inside <LiveKitRoom> so hooks can access the room context.
+
+function WebCallWidget() {
+  const { state: agentState } = useVoiceAssistant();
+  const { localParticipant } = useLocalParticipant();
+  const room = useRoomContext();
+  const micEnabled = localParticipant?.isMicrophoneEnabled ?? true;
+
+  const isSpeaking = agentState === "speaking";
+  const isThinking = agentState === "thinking";
+
+  const statusLabel: Record<string, string> = {
+    listening: "Listening",
+    thinking: "Thinking…",
+    speaking: "Speaking",
+    initializing: "Starting…",
+    connecting: "Connecting…",
+    disconnected: "Disconnected",
+  };
+  const label = statusLabel[agentState] ?? "Live";
+
+  return (
+    <div className="flex flex-col items-center gap-5 py-8">
+      {/* Agent state indicator */}
+      <div className="relative flex items-center justify-center size-20">
+        {isSpeaking && (
+          <span className="absolute inset-0 rounded-full bg-primary/20 animate-ping" />
+        )}
+        <div
+          className={`size-20 rounded-full flex items-center justify-center transition-colors duration-300 ${
+            isSpeaking ? "bg-primary/15" : "bg-muted"
+          }`}
+        >
+          <div
+            className={`size-12 rounded-full flex items-center justify-center transition-colors duration-300 ${
+              isSpeaking
+                ? "bg-primary"
+                : isThinking
+                  ? "bg-primary/50"
+                  : "bg-primary/25"
+            }`}
+          >
+            {isThinking ? (
+              <span className="size-4 border-2 border-white/40 border-t-white rounded-full animate-spin" />
+            ) : (
+              <Mic className="size-5 text-white" />
+            )}
           </div>
         </div>
-        <p className="text-sm font-medium text-foreground">Connected</p>
-        <VoiceAssistantControlBar controls={{ leave: true }} />
-        <RoomAudioRenderer />
       </div>
-      <TranscriptCapture agentKey={agentKey} onUpdate={onTranscriptUpdate} />
-    </LiveKitRoom>
+
+      {/* Status */}
+      <div className="text-center">
+        <p className="text-sm font-semibold text-foreground">{label}</p>
+        <p className="text-xs text-muted-foreground mt-0.5">Agent is live</p>
+      </div>
+
+      {/* Controls */}
+      <div className="flex items-center gap-2">
+        <button
+          onClick={() => localParticipant?.setMicrophoneEnabled(!micEnabled)}
+          title={micEnabled ? "Mute" : "Unmute"}
+          className={`flex items-center gap-1.5 px-4 py-2 rounded-lg text-xs font-medium border transition-colors ${
+            micEnabled
+              ? "border-border text-foreground hover:bg-muted"
+              : "border-destructive/40 text-destructive bg-destructive/5 hover:bg-destructive/10"
+          }`}
+        >
+          {micEnabled ? (
+            <Mic className="size-3.5" />
+          ) : (
+            <MicOff className="size-3.5" />
+          )}
+          {micEnabled ? "Mute" : "Unmute"}
+        </button>
+
+        <button
+          onClick={() => room.disconnect()}
+          className="flex items-center gap-1.5 px-4 py-2 rounded-lg text-xs font-medium bg-destructive text-white hover:bg-destructive/90 transition-colors"
+        >
+          <PhoneOff className="size-3.5" />
+          End call
+        </button>
+      </div>
+    </div>
   );
 }
 
@@ -515,8 +610,20 @@ function PhoneTestPanel({
   agent: AgentConfig;
   agentKey: string;
 }) {
-  const [countryCode, setCountryCode] = useState("+1");
-  const [localNumber, setLocalNumber] = useState("");
+  const [countryCode, setCountryCode] = useState(() => {
+    try {
+      return localStorage.getItem("playground_country_code") ?? "+1";
+    } catch {
+      return "+1";
+    }
+  });
+  const [localNumber, setLocalNumber] = useState(() => {
+    try {
+      return localStorage.getItem("playground_local_number") ?? "";
+    } catch {
+      return "";
+    }
+  });
   const [isCalling, setIsCalling] = useState(false);
   const [modalOpen, setModalOpen] = useState(false);
   const [callRoomName, setCallRoomName] = useState("");
@@ -606,7 +713,12 @@ function PhoneTestPanel({
       <div className="flex gap-2 w-full max-w-[320px]">
         <select
           value={countryCode}
-          onChange={(e) => setCountryCode(e.target.value)}
+          onChange={(e) => {
+            setCountryCode(e.target.value);
+            try {
+              localStorage.setItem("playground_country_code", e.target.value);
+            } catch {}
+          }}
           className="h-9 px-2 text-xs border border-border rounded-lg bg-card text-foreground focus:outline-none focus:ring-2 focus:ring-ring/30 focus:border-primary transition-colors shrink-0"
         >
           {COUNTRY_CODES.map((c) => (
@@ -619,7 +731,12 @@ function PhoneTestPanel({
           type="tel"
           placeholder="Phone number"
           value={localNumber}
-          onChange={(e) => setLocalNumber(e.target.value)}
+          onChange={(e) => {
+            setLocalNumber(e.target.value);
+            try {
+              localStorage.setItem("playground_local_number", e.target.value);
+            } catch {}
+          }}
           onKeyDown={(e) => e.key === "Enter" && handleCall()}
           className="flex-1"
         />
@@ -666,6 +783,10 @@ export function PlaygroundClient({ agents }: { agents: AgentConfig[] }) {
     useState<PromptSections | null>(null);
   const [promptLoading, setPromptLoading] = useState(false);
   const [isSavingPlayground, setIsSavingPlayground] = useState(false);
+  const [activeSection, setActiveSection] = useState<
+    keyof PromptSections | null
+  >(null);
+  const blurTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const transcriptRef = useRef<TranscriptLine[]>([]);
 
   const selectedAgent =
@@ -814,6 +935,10 @@ export function PlaygroundClient({ agents }: { agents: AgentConfig[] }) {
                 <WebTestPanel
                   key={`web-${selectedAgentKey}`}
                   agentKey={selectedAgentKey}
+                  translateEnabled={
+                    !!selectedAgent?.language &&
+                    !selectedAgent.language.startsWith("en")
+                  }
                   onTranscriptUpdate={handleTranscriptUpdate}
                   onUsage={handleUsage}
                   onCallEnded={handleCallEnded}
@@ -831,7 +956,10 @@ export function PlaygroundClient({ agents }: { agents: AgentConfig[] }) {
           {/* Transcript */}
           <TranscriptPanel
             transcript={transcript}
-            agentKey={selectedAgentKey}
+            translateEnabled={
+              !!selectedAgent?.language &&
+              !selectedAgent.language.startsWith("en")
+            }
           />
 
           {/* Cost breakdown — appears after call ends */}
@@ -878,33 +1006,71 @@ export function PlaygroundClient({ agents }: { agents: AgentConfig[] }) {
                 {playgroundSections &&
                   (
                     Object.keys(SECTION_LABELS) as Array<keyof PromptSections>
-                  ).map((key) => (
-                    <div key={key} className="flex flex-col gap-1.5">
-                      <label className="text-sm font-medium text-foreground">
-                        {SECTION_LABELS[key]}
-                      </label>
-                      <Textarea
-                        value={playgroundSections[key]}
-                        onChange={(e) => {
-                          const el = e.target;
-                          el.style.height = "auto";
-                          el.style.height = `${el.scrollHeight}px`;
-                          setPlaygroundSections((prev) =>
-                            prev ? { ...prev, [key]: e.target.value } : prev,
-                          );
-                        }}
-                        onFocus={(e) => {
-                          const el = e.target;
-                          el.style.height = "auto";
-                          el.style.height = `${el.scrollHeight}px`;
-                        }}
-                        className="leading-relaxed resize-none overflow-hidden"
-                        style={{
-                          minHeight: key === "voiceGreeting" ? "56px" : "80px",
-                        }}
-                      />
-                    </div>
-                  ))}
+                  ).map((key) => {
+                    const isActive = activeSection === key;
+                    const value = playgroundSections[key];
+                    return (
+                      <div key={key} className="flex flex-col gap-1.5">
+                        <label className="text-sm font-medium text-foreground">
+                          {SECTION_LABELS[key]}
+                        </label>
+                        {isActive ? (
+                          <Textarea
+                            value={value}
+                            onChange={(e) => {
+                              const el = e.target;
+                              el.style.height = "auto";
+                              el.style.height = `${el.scrollHeight}px`;
+                              setPlaygroundSections((prev) =>
+                                prev
+                                  ? { ...prev, [key]: e.target.value }
+                                  : prev,
+                              );
+                            }}
+                            onFocus={(e) => {
+                              const el = e.target;
+                              el.style.height = "auto";
+                              el.style.height = `${el.scrollHeight}px`;
+                            }}
+                            onBlur={() => {
+                              blurTimerRef.current = setTimeout(
+                                () => setActiveSection(null),
+                                150,
+                              );
+                            }}
+                            className="leading-relaxed resize-none overflow-hidden"
+                            style={{
+                              minHeight:
+                                key === "voiceGreeting" ? "56px" : "80px",
+                            }}
+                          />
+                        ) : (
+                          <div
+                            role="button"
+                            tabIndex={0}
+                            onMouseDown={() => {
+                              if (blurTimerRef.current) {
+                                clearTimeout(blurTimerRef.current);
+                              }
+                            }}
+                            onClick={() => setActiveSection(key)}
+                            onKeyDown={(e) =>
+                              e.key === "Enter" && setActiveSection(key)
+                            }
+                            className="min-h-[48px] px-3 py-2 rounded-md border border-input bg-background text-sm text-foreground leading-relaxed cursor-text line-clamp-3 hover:border-ring/50 transition-colors"
+                          >
+                            {value ? (
+                              value
+                            ) : (
+                              <span className="text-muted-foreground italic">
+                                Empty
+                              </span>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
               </div>
             )}
           </Card>

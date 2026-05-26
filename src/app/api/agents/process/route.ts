@@ -2,10 +2,17 @@ import { NextResponse } from "next/server";
 import { spawn } from "child_process";
 import fs from "fs";
 import path from "path";
-import { agents } from "@/lib/agents/registry";
 import { getDb } from "@/lib/firebase/admin";
 
 const PID_DIR = path.join(process.cwd(), ".agent-pids");
+const WORKER_SCRIPT = path.join(
+  process.cwd(),
+  "src",
+  "lib",
+  "agents",
+  "worker",
+  "agent.ts",
+);
 
 function pidFile(agentKey: string) {
   return path.join(PID_DIR, `${agentKey}.pid`);
@@ -29,7 +36,7 @@ function removePid(agentKey: string) {
   try {
     fs.unlinkSync(pidFile(agentKey));
   } catch {
-    // already gone
+    /* already gone */
   }
 }
 
@@ -51,30 +58,60 @@ function killAgent(agentKey: string) {
       try {
         process.kill(pid, "SIGKILL");
       } catch {
-        // already dead
+        /* already dead */
       }
     }
   }
   removePid(agentKey);
 }
 
-// Returns the effective agent direction — falls back to Firestore for dynamic agents
-async function resolveDirection(
-  agentKey: string,
-): Promise<"inbound" | "outbound" | null> {
-  if (agents[agentKey]) return agents[agentKey].direction;
+function slugify(s: string): string {
+  return (
+    s
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-|-$/g, "")
+      .slice(0, 36) || "agent"
+  );
+}
+
+interface AgentMeta {
+  direction: "inbound" | "outbound";
+  dispatchRuleName: string;
+}
+
+async function resolveAgent(agentKey: string): Promise<AgentMeta | null> {
   try {
     const snap = await getDb().collection("agents").doc(agentKey).get();
-    if (!snap.exists || !snap.data()?.isDynamic) return null;
-    return (snap.data()?.direction as "inbound" | "outbound") ?? "outbound";
+    if (!snap.exists) return null;
+    const data = snap.data()!;
+    return {
+      direction: (data.direction as "inbound" | "outbound") ?? "outbound",
+      dispatchRuleName: (data.dispatchRuleName as string) || agentKey,
+    };
   } catch {
     return null;
   }
 }
 
-// For dynamic agents: use the closest static template worker
-function templateWorkerKey(direction: "inbound" | "outbound"): string {
-  return direction === "inbound" ? "restaurant-es" : "sales-en";
+async function ensureSlugDispatchRule(
+  agentKey: string,
+  agent: AgentMeta,
+): Promise<string> {
+  const snap = await getDb().collection("agents").doc(agentKey).get();
+  const name = snap.data()?.name as string | undefined;
+  const slug = name ? slugify(name) : slugify(agentKey);
+
+  if (agent.dispatchRuleName !== slug) {
+    console.log(
+      `[process] migrating dispatchRuleName: ${agent.dispatchRuleName} → ${slug}`,
+    );
+    await getDb()
+      .collection("agents")
+      .doc(agentKey)
+      .update({ dispatchRuleName: slug });
+  }
+  return slug;
 }
 
 export async function GET(request: Request) {
@@ -83,9 +120,9 @@ export async function GET(request: Request) {
   if (!agentKey)
     return NextResponse.json({ error: "Invalid agentKey" }, { status: 400 });
 
-  const direction = await resolveDirection(agentKey);
-  if (!direction)
-    return NextResponse.json({ error: "Invalid agentKey" }, { status: 400 });
+  const agent = await resolveAgent(agentKey);
+  if (!agent)
+    return NextResponse.json({ error: "Agent not found" }, { status: 404 });
 
   const pid = readPid(agentKey);
   const isRunning = pid !== null && isProcessRunning(pid);
@@ -99,26 +136,16 @@ export async function POST(request: Request) {
     if (!agentKey)
       return NextResponse.json({ error: "Invalid agentKey" }, { status: 400 });
 
-    const direction = await resolveDirection(agentKey);
-    if (!direction)
-      return NextResponse.json({ error: "Invalid agentKey" }, { status: 400 });
+    const agent = await resolveAgent(agentKey);
+    if (!agent)
+      return NextResponse.json({ error: "Agent not found" }, { status: 404 });
 
     if (action === "start") {
       killAgent(agentKey);
 
-      // Dynamic agents reuse the nearest static template worker
-      const workerKey = agents[agentKey]
-        ? agentKey
-        : templateWorkerKey(direction);
-      const scriptPath = path.join(
-        process.cwd(),
-        "src",
-        "lib",
-        "agents",
-        direction,
-        workerKey,
-        "agent.ts",
-      );
+      // Migrate legacy dispatch rule names (e.g. "outbound-sales-en-dispatch")
+      // to the agent's name slug. Updates Firestore so future calls also use it.
+      const dispatchRule = await ensureSlugDispatchRule(agentKey, agent);
 
       const cleanEnv: Record<string, string> = {};
       for (const key in process.env) {
@@ -132,8 +159,10 @@ export async function POST(request: Request) {
         }
       }
       if (process.env.PATH) cleanEnv.PATH = process.env.PATH;
+      // Pass the migrated slug so the worker registers with the right name
+      cleanEnv.AGENT_DISPATCH_RULE = dispatchRule;
 
-      const child = spawn("npx", ["--yes", "tsx", scriptPath, "start"], {
+      const child = spawn("npx", ["--yes", "tsx", WORKER_SCRIPT, "start"], {
         cwd: process.cwd(),
         env: cleanEnv as NodeJS.ProcessEnv,
         stdio: ["ignore", "inherit", "inherit"],

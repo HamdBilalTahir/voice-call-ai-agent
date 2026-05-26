@@ -115,9 +115,15 @@ The architecture has three main processes:
      │              AI AGENT WORKER  (Node.js process)          │
      │                                                          │
      │  makeAgentEntry() / defineAgent()                        │
+     │                                                          │
+     │  Cascading pipeline (default)                            │
      │  ├─ STT: Deepgram nova-3 (or per-agent key/model)       │
      │  ├─ LLM: Gemini 2.0 Flash / GPT-4o (per-agent config)  │
      │  └─ TTS: ElevenLabs sonic-3 / Cartesia (per-agent)      │
+     │                                                          │
+     │  Gemini Live API  (when voiceSettings.useLiveApi=true,  │
+     │  playground only in phase 1)                             │
+     │  └─ google.beta.realtime.RealtimeModel (STT+LLM+TTS)    │
      └──────────────────────────────────────────────────────────┘
                 │                         │
     ┌───────────▼──────────┐   ┌──────────▼──────────────────┐
@@ -192,22 +198,26 @@ The primary config document for each agent. Fields:
 
 **`voiceSettings` sub-object:**
 
-| Field         | Type                           | Default              | Notes                          |
-| ------------- | ------------------------------ | -------------------- | ------------------------------ |
-| `callType`    | `"inbound"` \| `"outbound"`    | —                    | Read-only                      |
-| `language`    | string                         | `"en-US"`            | Agent's spoken language        |
-| `sttLanguage` | string                         | `"multi"`            | STT language hint              |
-| `llmProvider` | `"google"` \| `"openai"`       | `"google"`           |                                |
-| `llmModel`    | string                         | `"gemini-2.0-flash"` |                                |
-| `llmConfigId` | string                         | —                    | Refs `providerConfigs` doc     |
-| `ttsProvider` | `"elevenlabs"` \| `"cartesia"` | `"elevenlabs"`       |                                |
-| `ttsModel`    | string                         | `"sonic-3"`          |                                |
-| `ttsConfigId` | string                         | —                    | Refs `providerConfigs` doc     |
-| `ttsVoiceId`  | string                         | —                    | Provider-specific voice UUID   |
-| `voiceType`   | string                         | `"female-1"`         | Used to pick a default voiceId |
-| `sttProvider` | `"deepgram"`                   | `"deepgram"`         |                                |
-| `sttModel`    | string                         | `"nova-3"`           |                                |
-| `sttConfigId` | string                         | —                    | Refs `providerConfigs` doc     |
+| Field             | Type                           | Default              | Notes                               |
+| ----------------- | ------------------------------ | -------------------- | ----------------------------------- |
+| `callType`        | `"inbound"` \| `"outbound"`    | —                    | Read-only                           |
+| `language`        | string                         | `"en-US"`            | Agent's spoken language             |
+| `sttLanguage`     | string                         | `"multi"`            | STT language hint                   |
+| `llmProvider`     | `"google"` \| `"openai"`       | `"google"`           |                                     |
+| `llmModel`        | string                         | `"gemini-2.0-flash"` |                                     |
+| `llmConfigId`     | string                         | —                    | Refs `providerConfigs` doc          |
+| `ttsProvider`     | `"elevenlabs"` \| `"cartesia"` | `"elevenlabs"`       |                                     |
+| `ttsModel`        | string                         | `"sonic-3"`          |                                     |
+| `ttsConfigId`     | string                         | —                    | Refs `providerConfigs` doc          |
+| `ttsVoiceId`      | string                         | —                    | Provider-specific voice UUID        |
+| `voiceType`       | string                         | `"female-1"`         | Used to pick a default voiceId      |
+| `sttProvider`     | `"deepgram"`                   | `"deepgram"`         |                                     |
+| `sttModel`        | string                         | `"nova-3"`           |                                     |
+| `sttConfigId`     | string                         | —                    | Refs `providerConfigs` doc          |
+| `useLiveApi`      | boolean                        | `false`              | Swap pipeline for Gemini Live API   |
+| `liveApiModel`    | string                         | —                    | e.g. `"gemini-2.0-flash-exp"`       |
+| `liveApiVoice`    | string                         | —                    | e.g. `"Puck"`, `"Aoede"`, …         |
+| `liveApiConfigId` | string                         | —                    | Refs `providerConfigs` doc (Google) |
 
 ### `callHistory/{roomName}`
 
@@ -396,20 +406,23 @@ Save the returned `sipTrunkId` as `LIVEKIT_SIP_TRUNK_ID` in your environment.
 
 ## 10. AI Voice Pipeline (Runtime)
 
-The agent worker is built with `makeAgentEntry()` from `src/lib/agents/genericEntry.ts`. On each dispatch:
+The agent worker is built with `makeAgentEntry()` from `src/lib/agents/genericEntry.ts`. Pipeline construction is delegated to `buildSession()` in `src/lib/agents/sessionBuilder.ts`, which branches on `useLiveApi` from dispatch metadata.
+
+### Cascading pipeline (default, `useLiveApi: false`)
 
 ```
 ctx.job.metadata (JSON)
     │
     ▼
-Parse DispatchMeta
+Parse WorkerDispatchMeta
     ├─ systemPrompt, voiceGreeting
+    ├─ useLiveApi: false
     ├─ llmProvider, llmModel, llmApiKey
     ├─ ttsProvider, ttsModel, ttsApiKey, ttsVoiceId
     └─ sttModel, sttApiKey, sttLanguage
     │
     ▼
-Build voice.AgentSession
+buildSession() → voice.AgentSession
     ├─ STT:  Deepgram.STT({ model, language, apiKey })
     ├─ LLM:  Google.LLM({ model, apiKey })     — if llmProvider == "google"
     │        OpenAI.LLM({ model, apiKey })     — if llmProvider == "openai"
@@ -420,22 +433,61 @@ Build voice.AgentSession
 session.start({ agent: new voice.Agent({ instructions }), room })
     │
     ▼
-session.say(voiceGreeting)   ← caller hears the first line
+session.say(voiceGreeting)
     │
     ▼
 Continuous VAD → STT → LLM → TTS loop
     │
     ▼
-On close: write usage to .agent-usage/{roomName}.json
+On close: read session.usage.modelUsage (llm_usage / tts_usage / stt_usage)
+          write usage to .agent-usage/{roomName}.json
 ```
 
-API keys fall back to environment variables if not present in dispatch metadata:
+### Gemini Live API pipeline (`useLiveApi: true`)
 
-| Metadata key | Env fallback                              |
-| ------------ | ----------------------------------------- |
-| `llmApiKey`  | `GEMINI_API_KEY` / `OPENAI_API_KEY`       |
-| `ttsApiKey`  | `ELEVENLABS_API_KEY` / `CARTESIA_API_KEY` |
-| `sttApiKey`  | `DEEPGRAM_API_KEY`                        |
+```
+ctx.job.metadata (JSON)
+    │
+    ▼
+Parse WorkerDispatchMeta
+    ├─ systemPrompt, voiceGreeting
+    ├─ useLiveApi: true
+    ├─ liveApiModel, liveApiVoice, liveApiKey
+    │
+    ▼
+buildSession() → voice.AgentSession
+    └─ LLM: google.beta.realtime.RealtimeModel({
+               model, voice, apiKey, instructions
+             })
+       (no separate STT or TTS — Google handles audio natively)
+    │
+    ▼
+session.start({ agent: new voice.Agent({ instructions }), room })
+    │
+    ▼
+session.say(voiceGreeting)
+    │
+    ▼
+Bidirectional audio loop (VAD + speech handled by RealtimeModel)
+    │
+    ▼
+On close: read accumulated realtimeInputTokens / realtimeOutputTokens
+          (from metrics_collected → realtime_model_metrics events)
+          write usage to .agent-usage/{roomName}.json
+```
+
+### Phase 1 gate
+
+In phase 1, `useLiveApi` is overridden to `false` in the outbound call route before dispatch. Only playground (browser) tests run the Live API pipeline. A `console.warn` is emitted when the gate fires. The gate will be removed when phase 2 is enabled.
+
+### API key fallbacks
+
+| Metadata key | Env fallback                              | Pipeline  |
+| ------------ | ----------------------------------------- | --------- |
+| `llmApiKey`  | `GEMINI_API_KEY` / `OPENAI_API_KEY`       | Cascading |
+| `ttsApiKey`  | `ELEVENLABS_API_KEY` / `CARTESIA_API_KEY` | Cascading |
+| `sttApiKey`  | `DEEPGRAM_API_KEY`                        | Cascading |
+| `liveApiKey` | `GEMINI_API_KEY`                          | Live API  |
 
 ---
 

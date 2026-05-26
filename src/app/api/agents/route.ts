@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
+import { z } from "zod";
 import { listAgents, createAgent } from "@/lib/firebase/agents";
-import { agents as registryAgents } from "@/lib/agents/registry";
 import { verifyToken } from "@/lib/firebase/providerConfigs";
 
 export async function GET(req: Request) {
@@ -23,19 +23,26 @@ const LANG_MAP: Record<string, string> = {
   other: "en-US",
 };
 
-function templateDispatchRule(direction: "inbound" | "outbound"): string {
-  if (direction === "inbound")
-    return (
-      process.env.AGENT_DISPATCH_RULE_RESTAURANT_ES ??
-      registryAgents["restaurant-es"]?.dispatchRuleName ??
-      ""
-    );
-  return (
-    process.env.AGENT_DISPATCH_RULE_SALES_EN ??
-    registryAgents["sales-en"]?.dispatchRuleName ??
-    ""
-  );
-}
+const CreateAgentBodySchema = z.object({
+  name: z.string().min(1, "Agent name is required"),
+  description: z.string().optional(),
+  whatItDoes: z.string().optional(),
+  howItTalks: z.string().optional(),
+  whatToAvoid: z.string().optional(),
+  anythingElse: z.string().optional(),
+  openingLine: z.string().optional(),
+  purpose: z.string().optional(),
+  industry: z.string().optional(),
+  language: z.string().optional(),
+  voiceSettings: z
+    .object({
+      useLiveApi: z.boolean().optional(),
+      liveApiModel: z.string().min(1).max(100).optional(),
+      liveApiVoice: z.string().min(1).max(100).optional(),
+      liveApiConfigId: z.string().min(1).max(128).optional(),
+    })
+    .optional(),
+});
 
 export async function POST(req: Request) {
   try {
@@ -43,6 +50,25 @@ export async function POST(req: Request) {
     const userId = token ? await verifyToken(token) : null;
     if (!userId) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
+
+    let body: unknown;
+    try {
+      body = await req.json();
+    } catch {
+      return NextResponse.json({ error: "Invalid JSON" }, { status: 400 });
+    }
+
+    const parsed = CreateAgentBodySchema.safeParse(body);
+    if (!parsed.success) {
+      return NextResponse.json(
+        {
+          error: parsed.error.errors
+            .map((e) => `${e.path.join(".")}: ${e.message}`)
+            .join("; "),
+        },
+        { status: 400 },
+      );
     }
 
     const {
@@ -56,22 +82,16 @@ export async function POST(req: Request) {
       purpose,
       industry,
       language,
-    } = await req.json();
+      voiceSettings,
+    } = parsed.data;
 
-    if (!name?.trim()) {
-      return NextResponse.json(
-        { error: "Agent name is required" },
-        { status: 400 },
-      );
-    }
-
-    const direction = DIRECTION_MAP[purpose] ?? "outbound";
+    const direction = DIRECTION_MAP[purpose ?? ""] ?? "outbound";
 
     const result = await createAgent({
       name: name.trim(),
       direction,
-      language: LANG_MAP[language] ?? "en-US",
-      dispatchRuleName: templateDispatchRule(direction),
+      language: LANG_MAP[language ?? ""] ?? "en-US",
+      // dispatchRuleName omitted — createAgent auto-generates it from the name slug
       description:
         description?.trim() || whatItDoes?.trim() || `${direction} agent`,
       roleAndResponsibilities: whatItDoes?.trim() ?? "",
@@ -80,7 +100,8 @@ export async function POST(req: Request) {
       additionalInstructions: anythingElse?.trim() ?? "",
       voiceGreeting: openingLine?.trim() ?? "",
       industry: industry ?? "other",
-      userId: userId,
+      userId,
+      ...voiceSettings,
     });
 
     if (!result.ok) {

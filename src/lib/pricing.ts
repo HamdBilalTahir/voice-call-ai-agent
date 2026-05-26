@@ -1,4 +1,4 @@
-// Pricing as of 2025. Update rates here as providers change.
+// Pricing as of 2026-05. Update rates here as providers change.
 
 export interface ProviderRates {
   llm: {
@@ -14,7 +14,37 @@ export interface ProviderRates {
 }
 
 export const PROVIDER_RATES: Record<string, ProviderRates> = {
-  // ── Google Gemini ──────────────────────────────────────────────────────────
+  // ── Gemini Live API ────────────────────────────────────────────────────────
+  // Token-only billing — no per-minute or connection fees from Gemini.
+  // Audio is billed at 25 tokens/second. The SDK reports combined audio+text
+  // token counts; audio dominates in a voice call and is priced ~6x higher
+  // than text. STT and TTS are absorbed — no separate cost for those.
+  // Source: https://ai.google.dev/gemini-api/docs/pricing (verified 2026-05)
+  //
+  // IMPORTANT: these keys must stay above "gemini-2.0-flash" — lookupRates()
+  // uses substring matching and "gemini-2.0-flash-exp" contains "gemini-2.0-flash".
+  //
+  // gemini-live-2.5-flash-native-audio — audio in $3.00/1M, audio out $12.00/1M
+  "gemini-live-2.5-flash-native-audio": {
+    llm: { inputPerMToken: 3.0, outputPerMToken: 12.0 },
+    stt: { perMinute: 0 },
+    tts: { perKChar: 0 },
+  },
+  // gemini-3.1-flash-live-preview — same audio pricing tier as 2.5 Flash Live
+  "gemini-3.1-flash-live-preview": {
+    llm: { inputPerMToken: 3.0, outputPerMToken: 12.0 },
+    stt: { perMinute: 0 },
+    tts: { perKChar: 0 },
+  },
+  // gemini-2.0-flash-exp — deprecated Feb 2026, shutting down Jun 2026
+  // Audio input $0.70/1M, audio output $0.40/1M (same as text output)
+  "gemini-2.0-flash-exp": {
+    llm: { inputPerMToken: 0.7, outputPerMToken: 0.4 },
+    stt: { perMinute: 0 },
+    tts: { perKChar: 0 },
+  },
+
+  // ── Google Gemini (cascading LLM — text tokens only) ──────────────────────
   "gemini-2.0-flash": {
     llm: { inputPerMToken: 0.1, outputPerMToken: 0.4 },
     stt: { perMinute: 0 },

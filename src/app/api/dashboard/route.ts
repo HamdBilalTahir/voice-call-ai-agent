@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { getCallHistory, CallRecord } from "@/lib/history";
-import { agents } from "@/lib/agents/registry";
+import { listAgents } from "@/lib/firebase/agents";
 
 const DAY_MS = 86_400_000;
 
@@ -93,7 +93,7 @@ export async function GET() {
     .sort((a, b) => b.startTime - a.startTime)
     .slice(0, 5);
 
-  const agentList = Object.values(agents);
+  const agentList = await listAgents();
 
   return NextResponse.json({
     stats,

@@ -323,6 +323,12 @@ function CallSlideOver({
   );
   const [summary, setSummary] = useState<CallSummary | null>(null);
   const [summaryLoading, setSummaryLoading] = useState(false);
+  const [transcriptTurns, setTranscriptTurns] = useState<Array<{
+    speaker: string;
+    text: string;
+    ts: number;
+  }> | null>(null);
+  const [transcriptLoading, setTranscriptLoading] = useState(false);
 
   const agent = agents.find((a) => a.key === record.agentKey);
   const direction = deriveDirection(record, agents);
@@ -346,14 +352,35 @@ function CallSlideOver({
     }
   }, [record.transcript]);
 
+  const fetchTranscript = useCallback(async () => {
+    setTranscriptLoading(true);
+    try {
+      const res = await fetch(`/api/calls/transcript?callId=${record.id}`);
+      if (res.ok) {
+        const data = await res.json();
+        setTranscriptTurns(data.turns ?? []);
+      }
+    } catch {
+      // silent
+    } finally {
+      setTranscriptLoading(false);
+    }
+  }, [record.id]);
+
   useEffect(() => {
     setTab("overview");
     setSummary(null);
+    setTranscriptTurns(null);
   }, [record.id]);
 
   useEffect(() => {
     if (tab === "summary" && !summary && !summaryLoading) void fetchSummary();
   }, [tab, summary, summaryLoading, fetchSummary]);
+
+  useEffect(() => {
+    if (tab === "transcript" && !transcriptTurns && !transcriptLoading)
+      void fetchTranscript();
+  }, [tab, transcriptTurns, transcriptLoading, fetchTranscript]);
 
   const tabs = [
     { key: "overview", label: "Overview" },
@@ -606,31 +633,47 @@ function CallSlideOver({
           {/* ── Transcript ── */}
           {tab === "transcript" && (
             <div className="p-5">
-              {record.transcript ? (
-                <div className="space-y-3">
-                  {record.transcript
-                    .split("\n")
-                    .filter(Boolean)
-                    .map((line, i) => {
-                      const isAgent = line.startsWith("Agent:");
-                      return (
+              {transcriptLoading ? (
+                <div className="flex flex-col items-center gap-3 py-12">
+                  <Loader2 className="size-5 text-primary animate-spin" />
+                  <p className="text-xs text-muted-foreground">
+                    Loading transcript…
+                  </p>
+                </div>
+              ) : transcriptTurns && transcriptTurns.length > 0 ? (
+                <div className="space-y-4">
+                  {transcriptTurns.map((turn, i) => {
+                    const isAgent = turn.speaker === "agent";
+                    const time = new Date(turn.ts).toLocaleTimeString([], {
+                      hour: "2-digit",
+                      minute: "2-digit",
+                      second: "2-digit",
+                    });
+                    return (
+                      <div
+                        key={i}
+                        className={`flex flex-col max-w-[85%] ${isAgent ? "" : "ml-auto items-end"}`}
+                      >
                         <div
-                          key={i}
-                          className={`flex flex-col max-w-[85%] ${isAgent ? "" : "ml-auto items-end"}`}
+                          className={`flex items-center gap-2 mb-1 ${isAgent ? "" : "flex-row-reverse"}`}
                         >
                           <span
-                            className={`text-[10px] font-semibold uppercase tracking-wide mb-1 ${isAgent ? "text-primary" : "text-success"}`}
+                            className={`text-[10px] font-semibold uppercase tracking-wide ${isAgent ? "text-primary" : "text-success"}`}
                           >
                             {isAgent ? "Agent" : "Caller"}
                           </span>
-                          <div
-                            className={`px-3 py-2 rounded-xl text-xs leading-relaxed ${isAgent ? "bg-accent border border-primary/10" : "bg-secondary border border-border"}`}
-                          >
-                            {line.replace(/^(Agent|Caller):\s*/, "")}
-                          </div>
+                          <span className="text-[10px] text-muted-foreground tabular-nums">
+                            {time}
+                          </span>
                         </div>
-                      );
-                    })}
+                        <div
+                          className={`px-3 py-2 rounded-xl text-xs leading-relaxed ${isAgent ? "bg-accent border border-primary/10" : "bg-secondary border border-border"}`}
+                        >
+                          {turn.text}
+                        </div>
+                      </div>
+                    );
+                  })}
                 </div>
               ) : (
                 <div className="flex flex-col items-center justify-center py-16 gap-3">
@@ -1285,6 +1328,7 @@ export function CallHistoryClient({ agents }: { agents: AgentConfig[] }) {
                     <SortTh col="duration" label="Duration" />
                     <SortTh col="outcome" label="Outcome" />
                     <SortTh col="sentiment" label="Sentiment" />
+                    <th className={thCls}>Pipeline</th>
                     <th className={thCls}>LLM</th>
                     <th className={thCls}>Tokens</th>
                     <th className={thCls}>TTS</th>
@@ -1392,6 +1436,19 @@ export function CallHistoryClient({ agents }: { agents: AgentConfig[] }) {
                             score={record.sentimentScore}
                             showScore={false}
                           />
+                        </td>
+
+                        {/* Pipeline */}
+                        <td className="px-3 py-3">
+                          {record.pipelineMode === "live_api" ? (
+                            <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium bg-violet-500/15 text-violet-600 dark:text-violet-400 whitespace-nowrap">
+                              Live API
+                            </span>
+                          ) : (
+                            <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium bg-blue-500/15 text-blue-600 dark:text-blue-400 whitespace-nowrap">
+                              Cascading
+                            </span>
+                          )}
                         </td>
 
                         {/* LLM */}

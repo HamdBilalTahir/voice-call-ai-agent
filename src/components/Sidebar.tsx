@@ -331,6 +331,11 @@ function SidebarInner({
                                   title={agent.voiceEnabled ? "Live" : "Paused"}
                                 />
                                 <span className="truncate">{displayName}</span>
+                                {agent.useLiveApi && (
+                                  <span className="shrink-0 text-[9px] font-semibold px-1 py-0.5 rounded bg-violet-500/15 text-violet-500 leading-none">
+                                    Live
+                                  </span>
+                                )}
                               </Link>
                               <button
                                 onClick={(e) =>

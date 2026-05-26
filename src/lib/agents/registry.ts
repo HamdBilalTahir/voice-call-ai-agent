@@ -10,28 +10,10 @@ export interface AgentConfig {
   description: string;
   /** Overlaid from Firestore by the data layer — not stored in this registry */
   voiceEnabled?: boolean;
+  /** Overlaid from Firestore voiceSettings.useLiveApi */
+  useLiveApi?: boolean;
 }
 
-export const agents: Record<string, AgentConfig> = {
-  "sales-en": {
-    key: "sales-en",
-    direction: "outbound",
-    name: "Sales Agent (English)",
-    language: "en",
-    dispatchRuleName:
-      process.env.AGENT_DISPATCH_RULE_SALES_EN || "outbound-dispatch",
-    phoneNumber: process.env.AGENT_NUMBER_SALES_EN || "",
-    description: "Outbound sales agent for English-speaking prospects.",
-  },
-  "restaurant-es": {
-    key: "restaurant-es",
-    direction: "inbound",
-    name: "Restaurant Receptionist (Spanish)",
-    language: "es",
-    dispatchRuleName:
-      process.env.AGENT_DISPATCH_RULE_RESTAURANT_ES || "inbound-dispatch",
-    phoneNumber: process.env.AGENT_NUMBER_RESTAURANT_ES || "",
-    description:
-      "Answers all inbound restaurant calls in Spanish. Takes orders and handles enquiries.",
-  },
-};
+// Static agents removed — all agents are managed via Firestore.
+// This object is kept for backwards-compatible imports only.
+export const agents: Record<string, AgentConfig> = {};

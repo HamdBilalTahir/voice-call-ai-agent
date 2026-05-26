@@ -17,6 +17,17 @@ export async function resolveProviderKeys(
   const vs = agentData.voiceSettings;
   const result: ResolvedProviderKeys = {};
 
+  const liveApiResolution: Promise<void> = vs?.useLiveApi
+    ? vs.liveApiConfigId
+      ? getProviderConfig(uid, vs.liveApiConfigId).then((c) => {
+          if (c) result.liveApiKey = c.apiKey;
+        })
+      : Promise.resolve().then(() => {
+          const envKey = process.env.GEMINI_API_KEY;
+          if (envKey) result.liveApiKey = envKey;
+        })
+    : Promise.resolve();
+
   await Promise.all([
     vs?.llmConfigId
       ? getProviderConfig(uid, vs.llmConfigId).then((c) => {
@@ -33,6 +44,7 @@ export async function resolveProviderKeys(
           if (c) result.sttApiKey = c.apiKey;
         })
       : Promise.resolve(),
+    liveApiResolution,
   ]);
 
   return result;

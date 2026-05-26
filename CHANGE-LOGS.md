@@ -1,8 +1,379 @@
-## 🗓️ **2026-05-25**
+## 🗓️ **2026-05-26**
+
+---
+
+### ✨ Features
+
+---
+
+> ### Call History — Transcript Tab Shows Message-by-Message Conversation with Timestamps
+>
+> - **What changed:** The Transcript tab in the call history slide-over now fetches and renders each conversation turn individually instead of showing a flat pre-assembled string. A new `GET /api/calls/transcript?callId={docId}` route reads the `callHistory/{id}/transcripts` Firestore subcollection (where individual turns are written by the worker in real-time during the call) ordered by timestamp and returns an array of `{ speaker, text, ts }` objects. The component fetches lazily — only when the Transcript tab is first opened for a record — and resets when a different record is selected. Each turn is rendered as a chat bubble: agent turns left-aligned with a primary colour label, caller turns right-aligned with a success colour label, both showing a `HH:MM:SS` timestamp inline beside the speaker name. A loading spinner is shown while fetching; "No transcript recorded" is shown only when the subcollection is empty.
+> - **Why:** Transcripts were already being written per-turn to a Firestore subcollection by the worker, but the UI never read them — it only checked `record.transcript` (a legacy string field on the main document) which is never populated. This change closes that gap and replaces the flat string format with a structured, timestamped chat view that makes it easy to follow the conversation flow and correlate agent responses to caller input.
+> - **Files:**
+>   - `src/app/api/calls/transcript/route.ts` _(new — GET handler; reads transcripts subcollection ordered by ts; returns TranscriptTurn array)_
+>   - `src/components/CallHistoryClient.tsx` _(transcriptTurns + transcriptLoading state; fetchTranscript callback; useEffect lazy-fetch on tab open; transcript tab rewritten with chat bubble layout + timestamps)_
+
+---
+
+> ### Live API — Worker Auto-Spawns per Call and Auto-Kills on Room Finish
+>
+> - **What changed:** Every outbound call now spawns a dedicated fresh worker process and kills it automatically when the call ends. `spawnWorker()` in `outbound/route.ts` spawns `src/lib/agents/worker/agent.ts` via `tsx`, pipes both stdout and stderr to the Next.js terminal, and resolves only once `"registered worker"` appears in stdout (15-second timeout). The worker PID is written to `.worker-pids/{roomName}.pid` via `saveWorkerPid()`. The `room_finished` LiveKit webhook handler calls `killWorkerForRoom(roomName)` which reads the PID file, sends SIGTERM, and deletes the file. This means declined calls, missed calls, and completed calls all clean up the worker. Worker stdout is forwarded to the parent Next.js process in real-time so all agent logs (`[Pipeline]`, `[Transcript]`, `[STT]`, `[Agent]`) appear directly in the terminal.
+> - **Why:** A single long-lived worker reuses its LiveKit WebSocket connection across multiple calls. After a few hours the WebSocket drops and the worker stops receiving dispatch notifications — new calls appear to connect but the agent never joins. Spawning a fresh worker per call guarantees a live WebSocket for every call. Killing it on room finish prevents idle worker accumulation.
+> - **Files:**
+>   - `src/app/api/calls/outbound/route.ts` _(spawnWorker, saveWorkerPid, killWorkerForRoom added; worker spawn + PID save between SIP participant creation and agent dispatch; stdout/stderr forwarded to parent)_
+>   - `src/app/api/agent/route.ts` _(killWorkerForRoom imported and called on room_finished event)_
+
+---
+
+> ### Live API — Silence Check and Call-End Rules Restored
+>
+> - **What changed:** `buildLiveApiInstructions()` in `sessionBuilder.ts` was updated to re-add two instruction addenda that had been removed: `[SILENCE HANDLING]` — if the caller has not spoken for 45 or more seconds, the agent says "Are you still there?" exactly once; if no response within another 30 seconds it says a brief farewell and calls `end_call("completed")`; and `[CALL END RULES]` — when the caller says a clear farewell the agent speaks a brief farewell then calls `end_call("completed")`; for spam or repeated abuse it calls `end_call("spam")` immediately.
+> - **Why:** These rules were removed in an earlier refactor and left the agent with no timeout or call-termination behaviour — calls would hang indefinitely if the caller went silent or said goodbye.
+> - **Files:**
+>   - `src/lib/agents/sessionBuilder.ts` _(SILENCE HANDLING and CALL END RULES addenda re-added to buildLiveApiInstructions)_
+
+---
+
+> ### Live API — Greeting Trigger Uses AgentSession.generateReply Instead of New RealtimeSession
+>
+> - **What changed:** After `session.start()`, the greeting trigger now calls `await (session as any).generateReply({ userMessage: "." })` instead of the previous `(session as any).llm?.session?.()` approach. The old approach called `RealtimeModel.session()` which creates a **new disconnected** `RealtimeSession` — the synthetic user turn was sent to a session object that had no active Gemini connection, producing `"received server content but no active generation"` in the logs and no spoken greeting. `AgentSession.generateReply` routes through the framework's internal activity pipeline which holds the live Gemini connection, so the trigger fires correctly.
+> - **Why:** Gemini Live API waits for a user turn before generating any output. Without a trigger the agent sits silently until the caller speaks first. The old injection approach was confirmed broken by logs; using `AgentSession.generateReply` is the correct public entry point that the framework itself uses for reply generation.
+> - **Files:**
+>   - `src/lib/agents/genericEntry.ts` _(greeting trigger replaced: llm?.session?.().sendClientEvent → session.generateReply({ userMessage: "." }))_
+
+---
+
+> ### Outbound Route — Full Step-by-Step Console Trace for Call Debugging
+>
+> - **What changed:** Added `console.log` at every meaningful step of `POST /api/calls/outbound`: auth check pass/fail, body parse result, env var presence, SIP trunk fetch (with trunk count), room name and participant identity, call record write with resulting `callHistoryId`, provider key resolution (with key presence flags), dispatch metadata assembly (with key fields logged), worker spawn result (with PID), SIP participant creation, agent dispatch. Error paths also log the reason before returning.
+> - **Why:** Without per-step logging, failures anywhere in the outbound route (auth, trunk fetch, worker spawn, SIP errors) were invisible — the only signal was the final HTTP response code. The trace makes it possible to pinpoint exactly which step failed from the Next.js terminal output.
+> - **Files:**
+>   - `src/app/api/calls/outbound/route.ts` _(console.log at every step of POST handler)_
+
+---
+
+> ### Call History — Pipeline Column Added (Live API vs Cascading)
+>
+> - **What changed:** A new **Pipeline** column was added to the Call History table between Sentiment and LLM. Each row shows a coloured badge based on `record.pipelineMode`: **"Live API"** (violet) for `live_api` and **"Cascading"** (blue) for `cascading`. The column header is sortable-ready via `thCls`. Every call record already stores `pipelineMode` at write time via the outbound and test routes, so no schema change was required.
+> - **Why:** Operators running both pipeline modes need to distinguish at a glance which calls used Gemini Live API vs. the cascading STT → LLM → TTS stack — both for debugging and for reconciling cost differences between the two modes.
+> - **Files:**
+>   - `src/components/CallHistoryClient.tsx` _(Pipeline column header + badge cell inserted before LLM column)_
+
+---
+
+> ### Live API — Enabled for All Call Types (Phone + Test Number + Widget)
+>
+> - **What changed:** The "Phase 1 gate" in `src/app/api/calls/outbound/route.ts` that forced `useLiveApi: false` for all outbound phone calls has been removed. Live API now works everywhere the toggle is enabled — browser widget (Playground), test phone number calls, and real outbound calls. `pipelineMode` is derived directly from `agentData.voiceSettings?.useLiveApi` with no override. The "Playground only (phase 1)" amber warning banner in VoiceBehaviorTab was also removed.
+> - **Why:** The gate was a temporary placeholder while the Live API integration was being validated. With greeting injection and function-call-speech fixes landed, the restriction is no longer warranted.
+> - **Files:**
+>   - `src/app/api/calls/outbound/route.ts` _(Phase1Gate block removed; resolvedKeys + dispatchMetadata now built from unmodified agentData)_
+>   - `src/components/VoiceBehaviorTab.tsx` _(amber "Playground only" warning banner removed)_
+
+---
+
+> ### Playground — Test Phone Number Persisted Across Sessions
+>
+> - **What changed:** The country code selector and phone number input in the Playground phone test panel now read their initial values from `localStorage` (`playground_country_code`, `playground_local_number`) and write back on every change. Both `useState` calls use lazy initialisers with a try/catch so SSR doesn't throw on `localStorage` access.
+> - **Why:** Operators test the same phone number repeatedly — requiring them to re-enter it every page load was unnecessary friction.
+> - **Files:**
+>   - `src/components/PlaygroundClient.tsx` _(PhoneTestPanel: lazy localStorage init for countryCode + localNumber; write-back on onChange)_
+
+---
+
+### 🐛 Bug Fixes
+
+---
+
+> ### Webhook — Firestore Empty-Update Crash Fixed
+>
+> - **What changed:** `updateCallRecord()` in `history.ts` now exits early if the updates object is empty after stripping the `id` field. Previously, calling Firestore's `.update({})` with an empty object threw `"Update() requires either a single JavaScript object..."` and returned HTTP 500 from the webhook handler. The `room_started` webhook handler was also tightened to skip the update entirely when `lkCreationTime` is undefined (the only field it writes), which was the most common trigger for the empty-object path.
+> - **Why:** The `room_started` LiveKit webhook fires immediately when a room is created. If `creation_time` is absent from the webhook payload (which LiveKit omits in some configurations), the handler was calling `.update({})` — an invalid Firestore operation. The guard prevents the crash without changing any observable behaviour.
+> - **Files:**
+>   - `src/lib/history.ts` _(updateCallRecord: early return on empty data object; createIfMissing option added for inbound calls)_
+>   - `src/app/api/agent/route.ts` _(room_started handler: skip update when lkCreationTime is undefined)_
+
+---
+
+> ### Outbound Calls — Call Record Written Before SIP Participant Created (Race Condition Fix)
+>
+> - **What changed:** In `calls/outbound/route.ts`, `addCallRecord()` is now called immediately after the room name is generated — before `sipClient.createSipParticipant()` and before `agentDispatchClient.createDispatch()`. Previously the record was written at the very end of the route handler (after SIP setup and agent dispatch), which took up to 4–5 seconds. The LiveKit `room_started` webhook would fire during that window and log `"no doc with roomName=..."` because the record didn't exist yet. The same fix was applied to `calls/inbound/route.ts`.
+> - **Why:** LiveKit webhooks (`room_started`, `participant_joined`) are delivered within milliseconds of room creation. Writing the call record last guaranteed a race condition on every outbound call. Writing it first ensures webhooks always find an existing document to update.
+> - **Files:**
+>   - `src/app/api/calls/outbound/route.ts` _(addCallRecord moved before createSipParticipant; agent config resolved first so pipelineMode is known at record-write time)_
+>   - `src/app/api/calls/inbound/route.ts` _(addCallRecord moved before roomService.createRoom)_
+
+---
+
+> ### Outbound / Inbound Calls — Room Name Uses Agent Name Slug
+>
+> - **What changed:** Room names for both outbound and inbound calls are now derived from the agent's human-readable name rather than the Firestore document ID. A slug is generated from `agentData.name` (e.g. `"Sarah" → "sarah"`, `"Sales Bot" → "sales-bot"`) and used as the room name prefix: `<slug>-<phoneNumber>-<timestamp>`. Previously outbound rooms used the Firestore document ID as the prefix (e.g. `gZpvYpAgmk9WShjXqF8G-+971...`), which made LiveKit dashboard rooms unreadable.
+> - **Why:** Room names appear in the LiveKit Cloud dashboard and in call history. A human-readable slug makes it immediately clear which agent handled which call without cross-referencing Firestore IDs.
+> - **Files:**
+>   - `src/app/api/calls/outbound/route.ts` _(roomName prefix derived from agentData.name slug)_
+>   - `src/app/api/calls/inbound/route.ts` _(roomName prefix derived from agentData.name slug)_
+
+---
+
+> ### Live API — `session.say()` No Longer Called in Realtime Mode
+>
+> - **What changed:** `genericEntry.ts` no longer calls `session.say(greeting)` when the pipeline is Live API. The greeting was already injected into the Gemini model's instructions via `buildLiveApiInstructions` (the `[VOICE SESSION START]` directive), so calling `session.say()` was redundant and threw `"trying to generate speech from text without a TTS model"` because `RealtimeModel` has no separate TTS component.
+> - **Why:** The `AgentSession.say()` method delegates to the TTS model; the Live API session has no TTS slot. The greeting is handled by Gemini itself on session open via the injected instruction directive.
+> - **Files:**
+>   - `src/lib/agents/genericEntry.ts` _(greeting say() call moved inside cascading-only branch)_
+
+---
+
+### ♻️ Refactors
+
+---
+
+> ### Architecture — Static Agents Removed; All Agents Now Firestore-Only
+>
+> - **What changed:** The two hardcoded static agents (`sales-en`, `restaurant-es`) have been removed from the codebase. Every agent is now a dynamic Firestore document. Key changes across the codebase:
+>   - **`registry.ts`**: `agents` object emptied. Static entries removed. The export is kept for backwards-compatible imports but holds no data.
+>   - **`src/lib/agents/worker/agent.ts`** _(new)_: A single generic worker replaces both `outbound/sales-en/agent.ts` and `inbound/restaurant-es/agent.ts`. It registers with LiveKit under the dispatch rule name passed via the `AGENT_DISPATCH_RULE` environment variable, and accepts all pipeline config (system prompt, model, TTS, STT) from dispatch metadata at runtime.
+>   - **`process/route.ts`**: Fully rewritten. Removed registry lookup and `templateWorkerKey()`. Now reads `direction` and `dispatchRuleName` from Firestore for any agent key. Spawns the single generic worker with `AGENT_DISPATCH_RULE=<dispatchRuleName>` injected into the child process environment.
+>   - **`firebase/agents.ts`**: `dispatchRuleName` is now optional in `CreateAgentParams`. `createAgent()` auto-derives it from the agent's name slug (`"Sarah" → "sarah"`, `"Sales Bot" → "sales-bot"`) if not explicitly provided.
+>   - **`agents/route.ts`**: `templateDispatchRule()` helper removed. Agent creation no longer requires a static template dispatch rule — slug derivation in `createAgent` handles it.
+>   - **`calls/inbound/route.ts`**: Rewritten to look up agents from Firestore (not static registry). Writes the call record before room creation (race condition fix). Uses the agent's own `dispatchRuleName` for dispatch. Passes `resolvedKeys` for provider API keys.
+>   - **`dashboard/route.ts`**: Replaced `Object.values(agents)` (static registry) with `listAgents()` (Firestore).
+>   - **`PlaygroundClient.tsx`**: Removed all `agentKey === "restaurant-es"` hardcoded checks. Translation behaviour (Spanish → English subtitles in transcript) is now driven by a `translateEnabled` prop derived from `agent.language.startsWith("en")`, making it work for any non-English agent automatically.
+> - **Why:** Static agents were a bootstrap scaffold that became a liability. They polluted the playground agent selector with agents the user never configured, caused the playground to auto-default to `sales-en` on every page load, and meant adding a new agent required a code change and redeploy. All agents being Firestore-only means the product is fully data-driven — operators create, edit, and delete agents from the UI with no code changes required.
+> - **Files:**
+>   - `src/lib/agents/registry.ts` _(agents object emptied)_
+>   - `src/lib/agents/worker/agent.ts` _(new — single generic worker for all agents)_
+>   - `src/app/api/agents/process/route.ts` _(full rewrite — Firestore lookup + generic worker spawn with AGENT_DISPATCH_RULE env)_
+>   - `src/lib/firebase/agents.ts` _(dispatchRuleName optional; auto-slug in createAgent)_
+>   - `src/app/api/agents/route.ts` _(templateDispatchRule removed)_
+>   - `src/app/api/calls/inbound/route.ts` _(Firestore lookup; pre-call record write; own dispatch rule)_
+>   - `src/app/api/dashboard/route.ts` _(listAgents() replaces static registry)_
+>   - `src/components/PlaygroundClient.tsx` _(restaurant-es hardcodes replaced with translateEnabled language prop)_
+
+---
+
+> ### Agent Entry — Split into Separate Live API and Cascading Pipeline Functions
+>
+> - **What changed:** `makeAgentEntry()` in `genericEntry.ts` was refactored from a single monolithic function with scattered `if (meta.useLiveApi)` branches into two self-contained async functions: `runLiveApiSession()` and `runCascadingSession()`. The entry point now just parses dispatch metadata and routes to one or the other. Each function owns its own session construction, event listeners, greeting logic, and usage tracking. A shared `writeUsage()` helper eliminates the duplicated file-write code. Live API usage capture: accumulates `realtimeInputTokens` / `realtimeOutputTokens` from `metrics_collected` events; writes `sttModel: "live_api"` and `ttsModel: "live_api"` since the Live API absorbs both. Cascading usage capture: unchanged — reads from `session.usage.modelUsage` on close.
+> - **Why:** Mixing two fundamentally different pipeline shapes (end-to-end realtime audio vs. three-stage STT/LLM/TTS) in one function made both harder to read, test, and extend independently. The split makes each path self-documenting and removes the risk of a cascading-specific change accidentally affecting the Live API path.
+> - **Files:**
+>   - `src/lib/agents/genericEntry.ts` _(runLiveApiSession + runCascadingSession extracted; writeUsage helper added; makeAgentEntry reduced to connect + route)_
 
 ---
 
 ### 🗄️ Data & Infrastructure
+
+---
+
+> ### Pricing — Gemini Live API Token Rates Added (Verified Against Google Docs)
+>
+> - **What changed:** Three Gemini Live API model entries added to `PROVIDER_RATES` in `pricing.ts`, with rates verified against the official Google AI pricing page (`ai.google.dev/gemini-api/docs/pricing`). `gemini-live-2.5-flash-native-audio`: audio input **$3.00/1M tokens**, audio output **$12.00/1M tokens**. `gemini-3.1-flash-live-preview`: same tier at **$3.00/$12.00** (preview pricing matches 2.5 Flash Live). `gemini-2.0-flash-exp` (deprecated Feb 2026, shutting down Jun 2026): audio input **$0.70/1M**, audio output **$0.40/1M**. All three have `stt` and `tts` rates of $0 — the Live API absorbs STT and TTS into the single model charge. Key ordering was also fixed: the more specific `gemini-2.0-flash-exp` key is now placed above `gemini-2.0-flash` in the `PROVIDER_RATES` object. `lookupRates()` uses substring matching, so without this ordering `"gemini-2.0-flash-exp"` would have matched the `"gemini-2.0-flash"` entry (text rates) instead of its own audio-rate entry. The header comment was updated to `2026-05` and a source URL added above the Live API block. The cascading Gemini entries (`gemini-2.0-flash`, `gemini-3-flash-preview`) were moved below the Live API block to reinforce the ordering rule.
+> - **Why:** Live API calls previously showed $0.00 cost because `pricing.ts` had no entries for any Live API model. Audio tokens are billed at 25 tokens/second and priced ~6–30x higher than text tokens depending on the model — using audio rates is the correct approximation for voice calls where the vast majority of tokens are audio. The substring-match ordering bug would have silently applied text rates ($0.10/$0.40) to `gemini-2.0-flash-exp` Live API calls instead of the correct audio rates ($0.70/$0.40).
+> - **Files:**
+>   - `src/lib/pricing.ts` _(Live API entries added with verified rates; key ordering fixed; cascading entries moved below Live API block; header and source comment updated)_
+
+---
+
+> ### Playground — Instructions Sections Collapse on Click-Outside
+>
+> - **What changed:** Each prompt section in the Playground instructions panel now toggles between a compact preview and an expanded textarea. **Compact state (default):** the section content is rendered as a clickable `div` with `line-clamp-3`, showing at most three lines with ellipsis and an "Empty" placeholder when blank. **Expanded state:** clicking the div (or pressing Enter) switches to a full auto-height `Textarea` with `autoFocus`. Clicking or tabbing outside the textarea collapses it back after a 150ms debounce. The debounce (via `blurTimerRef`) is cancelled by `onMouseDown` on any compact div, preventing a flicker when moving focus directly from one section to another. `activeSection` state (type `keyof PromptSections | null`) tracks which section is open; `blurTimerRef` holds the pending timeout ID.
+> - **Why:** With all sections expanded simultaneously the instructions panel becomes a wall of text that is hard to scan. The click-to-expand pattern lets operators quickly read all sections in compact form and dive into the one they want to edit, without the others expanding or scrolling away.
+> - **Files:**
+>   - `src/components/PlaygroundClient.tsx` _(activeSection state; blurTimerRef; section map replaced with compact div / Textarea toggle; 150ms blur debounce)_
+
+---
+
+> ### Agents — Live/Paused Status Moved to `status/current` Subcollection
+>
+> - **What changed:** `voiceEnabled` is no longer the sole write target when toggling an agent Live or Paused. `setAgentLiveStatus()` now does a batch write: the source of truth goes to `agents/{agentKey}/status/current` (`{ voiceEnabled, updatedAt, updatedBy, updatedByName }`), and `voiceEnabled` is also written to the parent doc as a denormalized field so `listAgents()` can read the sidebar dot without an extra subcollection fetch per agent. `getAgent()` was extended to read `status/current` in the same `Promise.all` that already reads `config/voice`, and overlays `voiceEnabled` from the subcollection onto the merged agent object (backward-compat: falls back to parent doc field for agents not yet toggled with new code). `createAgent()` now writes an initial `status/current` doc (`voiceEnabled: false`) as part of the same batch that creates the parent doc and `config/voice`. Additionally, the registry guard in `setAgentLiveStatus()` that blocked the toggle for dynamic agents (not in the static registry) has been removed — the function now works for all agents.
+> - **Why:** Storing operational state (`voiceEnabled`) alongside structural metadata and config on a single flat document makes it harder to apply targeted Firestore security rules and harder to build a status-change audit log. The `status` subcollection mirrors the pattern used for `config/voice` and gives a clear, isolated location for present and future agent state (e.g. `status/history` for past toggles). The registry guard bug also meant dynamic agents — the majority of UI-created agents — could never be toggled Live.
+> - **Files:**
+>   - `src/lib/firebase/agents.ts` _(setAgentLiveStatus: batch write to status/current + parent denorm; registry guard removed; getAgent: status/current read in Promise.all, voiceEnabled overlaid; createAgent: initial status/current doc in batch)_
+
+---
+
+> ### Agents — Voice Settings Moved to `config/voice` Subcollection
+>
+> - **What changed:** `voiceSettings` is no longer written to the top-level `agents/{agentKey}` document. It is now stored in the `agents/{agentKey}/config/voice` subcollection document. **Writes:** `updateAgentConfig()` splits the incoming payload into two parts — non-voiceSettings Tier-1 fields (name, instructions, etc.) go to the parent doc; all `voiceSettings` sub-fields go to `config/voice` via a Firestore batch commit, so both writes are atomic. **Reads:** `getAgent()` now issues two parallel reads (`Promise.all`) — the parent doc and `config/voice` — then overlays the subcollection data on top of the parent doc's `voiceSettings` before merging. This makes the subcollection the source of truth while preserving backward compatibility for agents whose `config/voice` doc doesn't exist yet (they continue reading from the parent doc's `voiceSettings` field). **Sidebar performance:** `useLiveApi` is denormalized to the parent doc on every save so `listAgents()` (which only reads parent docs) can still render the "Live" badge in the sidebar without issuing a subcollection fetch per agent. **New agents:** `createAgent()` now uses a pre-generated `docRef` and a batch write to atomically create both the parent doc and the `config/voice` subcollection doc in a single round-trip, removing the previous `col.add()` + `docRef.update({ key })` pattern.
+> - **Why:** Storing all configuration in a flat top-level document mixes structural metadata (direction, dispatchRuleName, userId) with operational config (provider selections, model choices, API key references). The subcollection separation gives each concern its own document, makes Firestore security rules easier to scope (e.g. restrict `config/voice` writes to server-side only), and opens a clear path to versioned config history (`config/{timestamp}`) without restructuring the parent doc.
+> - **Files:**
+>   - `src/lib/firebase/agents.ts` _(AgentFirestoreDoc: useLiveApi denormalized field; mergeAgentData: reads useLiveApi from top-level first; getAgent: parallel reads parent + config/voice, backward-compat merge; updateAgentConfig: batch split — voiceSettings → subcollection, rest → parent, useLiveApi denormalized; createAgent: pre-generated docRef + batch write for parent + config/voice)_
+
+---
+
+## 🗓️ **2026-05-25**
+
+---
+
+### ✨ Features
+
+---
+
+> ### Voice & Behavior — ElevenLabs Voice Browser with Audio Previews and Filters
+>
+> - **What changed:** The TTS Voice ID field in the Voice & Behavior tab was replaced by a "Browse voices…" button that opens a full-screen **VoicePickerModal**. The modal fetches the user's available ElevenLabs voices from a new `GET /api/elevenlabs/voices` route, which proxies the ElevenLabs API with a 5-minute Next.js revalidation cache. Voices are displayed in a scrollable list with search (name, accent, description, use case) and three sets of filter pills: **Gender** (Male / Female), **Age** (Young / Middle Aged / Old), and **Use** (Conversational / Narration / News Presenter / Characters / Assistant). Each row shows a play button that uses the voice's `preview_url` directly in the browser (`new Audio(preview_url)`), plus a gender/accent/age/use-case tag cluster. Selecting a voice stores both `voice_id` and display name in form state; the trigger button updates to show the selected voice name. The API route resolves the ElevenLabs API key from the user's `providerConfigs` vault (via `configId` param + Bearer auth) or falls back to `ELEVENLABS_API_KEY` env var, matching the pattern used by the other provider routes.
+> - **Why:** The raw ElevenLabs voice ID is a UUID string with no human context — operators had no way to discover or audition voices without leaving the product. The browser brings the full voice catalogue, with audio previews and metadata filtering, into the same settings panel where the voice is configured.
+> - **Files:**
+>   - `src/components/VoicePickerModal.tsx` _(new — full-screen modal with search, filter pills, play/pause preview, select button)_
+>   - `src/app/api/elevenlabs/voices/route.ts` _(new — proxies ElevenLabs voices list; configId vault or env key; 5-min revalidation)_
+>   - `src/components/VoiceBehaviorTab.tsx` _(Browse voices trigger button; showVoicePicker state; selectedVoiceName display; VoicePickerModal rendered conditionally)_
+
+---
+
+> ### Voice & Behavior — Gemini Live API Voice Browser with Audio Previews and Gender/Character Filters
+>
+> - **What changed:** The Live API voice dropdown in the Voice & Behavior tab was replaced by a "Browse voices…" button that opens a full-screen **GeminiVoicePickerModal**. The modal has a static list of all 30 Gemini voices (named after astronomical objects — planetary moons and stars) with search (name or tone descriptor) and two sets of filter pills: **Gender** (Female / Male) and **Character** (Bright / Warm / Clear / Authoritative / Deep / Smooth / Energetic). Each voice row shows a play button that calls `GET /api/gemini/voice-preview?voice=...` to generate a short audio clip via the Gemini TTS API. Gender is assigned from community benchmark data (voicerankings.com) since Google publishes no official gender metadata. Voice cards show gender (pink for Female, blue for Male), tone descriptor, and character category (violet) as badge tags. A header note clarifies that language follows the agent's system prompt, not the voice selection. The footer shows the count of filtered voices and reiterates the no-language-filter constraint.
+> - **Why:** Gemini provides no static preview audio for Live API voices, and the voice names are astronomical object names with no intuitive meaning. Without previews and categorization operators cannot make an informed voice choice. Gender and character filters let operators narrow to a voice type first, then audition candidates.
+> - **Files:**
+>   - `src/components/GeminiVoicePickerModal.tsx` _(new — 30-voice static list with gender/character metadata; search + filter pills; play/pause via voice-preview API; select button)_
+>   - `src/app/api/gemini/voice-preview/route.ts` _(new — generates WAV audio via gemini-2.5-flash-preview-tts; PCM16-to-WAV conversion; server-side in-memory cache; browser Cache-Control 24h)_
+>   - `src/components/VoiceBehaviorTab.tsx` _(Browse voices trigger for Live API; showGeminiVoicePicker state; GeminiVoicePickerModal rendered conditionally)_
+
+---
+
+> ### Gemini Live API — Updated Model List to Latest Versions
+>
+> - **What changed:** The Live API model dropdown in the Voice & Behavior tab was updated from three stale model IDs to the current set: **Gemini 3.1 Flash Live (Preview)** (`gemini-3.1-flash-live-preview`, newest), **Gemini 2.5 Flash Native Audio** (`gemini-live-2.5-flash-native-audio`, stable), and **Gemini 2.0 Flash (Legacy)** (`gemini-2.0-flash-exp`). The worker fallback default in `sessionBuilder.ts` was updated from `gemini-2.0-flash-exp` to `gemini-live-2.5-flash-native-audio` so new agents default to the stable 2.5 model rather than the older experimental one.
+> - **Why:** Model names were stale — `gemini-2.0-flash-exp` was the previous best-effort fallback but `gemini-live-2.5-flash-native-audio` is now the recommended production choice for the Live API. Using the wrong model in the default path would produce lower quality audio for operators who have not yet explicitly picked a model.
+> - **Files:**
+>   - `src/components/VoiceBehaviorTab.tsx` _(LIVE_API_MODELS constant updated with correct model IDs and display names)_
+>   - `src/lib/agents/sessionBuilder.ts` _(fallback default changed from gemini-2.0-flash-exp to gemini-live-2.5-flash-native-audio)_
+
+---
+
+### 🏗️ Architecture
+
+---
+
+> ### Gemini Live API — Architecture Documentation Updated
+>
+> - **What changed:** `Architecture.md` updated across three sections. **Section 3 (High-Level Architecture diagram):** AI agent worker box now shows both pipeline modes side-by-side — cascading (default) and Gemini Live API (playground only, phase 1). **Section 5 (Firestore Data Model):** `voiceSettings` table extended with four new fields: `useLiveApi`, `liveApiModel`, `liveApiVoice`, `liveApiConfigId`. **Section 10 (AI Voice Pipeline):** replaced the single pipeline flow with two separate ASCII flow diagrams — one for cascading (reads `session.usage.modelUsage` on close) and one for Live API (reads accumulated `realtimeInputTokens`/`realtimeOutputTokens` from `metrics_collected` events on close). Added a Phase 1 gate note explaining the outbound override and a four-row API key fallback table including the new `liveApiKey → GEMINI_API_KEY` fallback.
+> - **Why:** The architecture doc is the first place a new engineer reads to understand system behaviour. Without this update it would describe a system that no longer exists — a single cascading pipeline — rather than the dual-mode design now in production.
+> - **Files:**
+>   - `Architecture.md` _(section 3 diagram, section 5 voiceSettings table, section 10 pipeline flows, phase 1 gate note, key fallback table)_
+
+---
+
+> ### Gemini Live API — Phase 1 Routing Gate (Outbound Blocked, Playground Unrestricted)
+>
+> - **What changed:** Added a phase 1 gate in `POST /api/calls/outbound`. After resolving agent data, if `voiceSettings.useLiveApi` is true, the route clones the agent data with `useLiveApi: false`, emits a `console.warn` with `agentKey` and `roomName`, and builds dispatch metadata from the gated clone. The gate ensures the cascading pipeline is always used for real phone calls in phase 1. `pipelineMode` in the call history record correctly reflects `"cascading"` for gated calls. The test route (`/api/calls/test`) has no gate — browser playground tests use the Live API when the toggle is on.
+> - **Why:** The Live API requires audio to travel over WebRTC, which works correctly in the browser playground. PSTN calls go through the Twilio SIP → LiveKit audio path, which has not yet been validated with the Live API. The gate prevents unvalidated paths from reaching production callers while keeping playground testing fully functional.
+> - **Files:**
+>   - `src/app/api/calls/outbound/route.ts` _(phase 1 gate — clones agentData with useLiveApi:false; console.warn on gate fire; gated clone used for resolveProviderKeys + buildDispatchMetadata)_
+
+---
+
+> ### Gemini Live API — Phase 1 Playground-Only Note in Voice & Behavior Tab
+>
+> - **What changed:** When the Gemini Live API toggle is enabled, an amber informational banner now appears at the top of the Live API settings section (inside the toggle card). The banner explains that Live API is currently active only in browser playground tests, and that real phone calls (inbound and outbound) continue to use the cascading STT → LLM → TTS pipeline until phase 2 is enabled. The banner uses the existing `AlertCircle` icon and is styled with `bg-amber-500/10 border border-amber-500/20` to be prominent without looking like an error.
+> - **Why:** Without this note, an operator who enables the toggle and makes a phone call would see no difference in behaviour and have no way to know why. The banner sets the expectation upfront and points at the phase 2 path forward.
+> - **Files:**
+>   - `src/components/VoiceBehaviorTab.tsx` _(amber phase 1 banner inside the useLiveApi toggle card)_
+
+---
+
+> ### Gemini Live API — "Live" Badge on Agent Sidebar Entries
+>
+> - **What changed:** Agent entries in the sidebar now display a small "Live" badge when `voiceSettings.useLiveApi` is true. The badge is rendered inside the sidebar link, between the agent name and the right edge, using a violet pill style that is visually distinct from the green voice-enabled dot. To make the field available without changing the prop type on `Sidebar` or `AppLayout`, `useLiveApi?: boolean` was added as an overlaid field on `AgentConfig` (following the same pattern as `voiceEnabled`), and `mergeAgentData()` in `agents.ts` now sets it from `doc.voiceSettings?.useLiveApi`.
+> - **Why:** Operators managing multiple agents need a quick at-a-glance signal in the navigation to know which agents are running the Live API pipeline, without opening each agent's settings.
+> - **Files:**
+>   - `src/lib/agents/registry.ts` _(useLiveApi added to AgentConfig as an overlaid field)_
+>   - `src/lib/firebase/agents.ts` _(mergeAgentData sets useLiveApi from voiceSettings)_
+>   - `src/components/Sidebar.tsx` _("Live" badge rendered when agent.useLiveApi is true)_
+
+---
+
+> ### Gemini Live API — Toggle, Settings Panel, and Pipeline Dimming in Voice & Behavior Tab
+>
+> - **What changed:** **Toggle:** A "Use Gemini Live API (experimental)" toggle switch is now rendered at the top of the Voice & Behavior panel, above the LLM section. It is bound to `voiceSettings.useLiveApi` and persisted to Firestore on save. **Live API settings panel:** when the toggle is on, a "Gemini Live Settings" section expands inside the toggle card with a model dropdown (`LIVE_API_MODELS`), a voice dropdown (`LIVE_API_VOICES`), and an API key picker bound to `liveApiConfigId`. The API key picker reuses the same vault flow as the other providers. **Pipeline dimming:** when the toggle is on, the LLM, TTS, and STT provider sections each reduce to `opacity-40 pointer-events-none` and display a one-line inline note ("Disabled — Gemini Live API handles the full pipeline."). Values in those sections are preserved in form state so they can be restored if the toggle is turned off without a save. **FormState** extended with `useLiveApi`, `liveApiModel`, `liveApiVoice`, `liveApiConfigId`. `fromData()` and `defaultForm` updated to read/initialise these fields. `doSave()` includes all four fields in the PATCH payload.
+> - **Why:** The toggle is the primary user-facing control for this feature. Keeping the cascading-pipeline fields visible but dimmed makes it clear that those settings still exist and will be used if the toggle is turned off — rather than hiding them and making operators wonder where they went.
+> - **Files:**
+>   - `src/components/VoiceBehaviorTab.tsx` _(useLiveApi toggle; Live API settings section; LLM/TTS/STT dimming; FormState + fromData + defaultForm + doSave extended)_
+
+---
+
+> ### Gemini Live API — Structured Pipeline-Mode Logging at Dispatch and Session Start
+>
+> - **What changed:** **Worker (`genericEntry.ts`):** immediately after `buildSession()` resolves, a single structured `logger.info` line is emitted with `{ pipelineMode, model, voice?, room }`. `pipelineMode` is `"live_api"` or `"cascading"`. `model` is the resolved Live API model or the resolved LLM model for the cascading path. `voice` is included only when `pipelineMode` is `"live_api"` (e.g. `"Puck"`). `room` is `ctx.room.name`. **Control plane (`outbound/route.ts`, `test/route.ts`):** a `console.info("[Pipeline] dispatch", { pipelineMode, agentKey, roomName })` line is emitted immediately before `createDispatch()` in both routes, so every dispatch is traceable from server logs without opening the call history UI.
+> - **Why:** Without a log line at session start, the only way to confirm which pipeline ran a given call was to read the usage JSON file after the call ended. Logging at dispatch time and again at session start gives two independent checkpoints — useful when debugging agent-not-picking-up issues where the session never starts.
+> - **Files:**
+>   - `src/lib/agents/genericEntry.ts` _(structured log line at session start with pipelineMode, model, voice, room)_
+>   - `src/app/api/calls/outbound/route.ts` _(console.info at dispatch with pipelineMode, agentKey, roomName)_
+>   - `src/app/api/calls/test/route.ts` _(console.info at dispatch with pipelineMode, agentKey, roomName)_
+
+---
+
+> ### Gemini Live API — Greeting, Lifecycle, and Usage Logging in Live Mode
+>
+> - **What changed:** `genericEntry.ts` updated to correctly handle the Live API session lifecycle. **Greeting:** `session.say()` returns an awaitable `SpeechHandle` and works identically in both modes — no change required; the existing try/catch guard remains. **Live API lifecycle events:** added `metrics_collected` listener that accumulates `inputTokens`/`outputTokens` from `realtime_model_metrics` events and logs `ttftMs` and model name per generation; added `session_usage_updated` listener that logs the `modelUsage` array. These events are not emitted by the cascading pipeline so the listeners add Live API observability without affecting existing behaviour. **Usage writer:** now branches on `meta.useLiveApi` — in Live mode it uses the accumulated realtime token counters and sets `sttModel`/`ttsModel` to `"live_api"` (the Live API handles audio natively, so no separate STT/TTS figures exist); in cascading mode the existing `session.usage.modelUsage` logic is unchanged. The outer try/catch on the close handler ensures neither branch can crash the worker.
+> - **Why:** The Live API emits usage through `realtime_model_metrics` events rather than the `llm_usage`/`tts_usage`/`stt_usage` entries the cascading writer expects. Without branching, every Live API call would log zero tokens. The new lifecycle event listeners give operators visibility into per-generation latency and token counts without requiring a separate monitoring tool.
+> - **Files:**
+>   - `src/lib/agents/genericEntry.ts` _(metrics_collected + session_usage_updated listeners; usage writer branched on useLiveApi; accumulated realtime token counters)_
+
+---
+
+> ### Gemini Live API — Session Builder (`sessionBuilder.ts`)
+>
+> - **What changed:** Extracted all STT/LLM/TTS construction logic from `genericEntry.ts` into a new `src/lib/agents/sessionBuilder.ts` module. The module exports `AgentDefaults`, `WorkerDispatchMeta` (superset of the old local `DispatchMeta`, now including `useLiveApi`, `liveApiModel`, `liveApiVoice`, `liveApiKey`), and `buildSession(meta, defaults) → voice.AgentSession`. When `meta.useLiveApi` is true, `buildSession` instantiates `google.beta.realtime.RealtimeModel` with the Live API model, voice, key, and system prompt, and returns a `voice.AgentSession` with no STT or TTS components. When false, it returns the existing cascading `deepgram.STT → google/openai.LLM → elevenlabs/cartesia.TTS` session unchanged. `genericEntry.ts` is now lifecycle-only: it connects, parses metadata, calls `buildSession`, wires session events, starts the session, plays the greeting, and writes usage on close. `AgentDefaults` is re-exported from `genericEntry.ts` so the two agent worker files require no changes.
+> - **Why:** Adding a second pipeline mode inline would have doubled the complexity of `makeAgentEntry`. A dedicated builder keeps each pipeline self-contained and testable in isolation.
+> - **Files:**
+>   - `src/lib/agents/sessionBuilder.ts` _(new — AgentDefaults, WorkerDispatchMeta, buildSession with Live API and cascading branches)_
+>   - `src/lib/agents/genericEntry.ts` _(refactored to lifecycle-only; imports buildSession; re-exports AgentDefaults)_
+
+---
+
+### 🗄️ Data & Infrastructure
+
+---
+
+> ### Gemini Live API — `pipelineMode` Field on Call History Documents
+>
+> - **What changed:** Added `pipelineMode?: "cascading" | "live_api"` to the `CallRecord` interface in `history.ts`. Both dispatch routes now derive the mode from `agentData.voiceSettings?.useLiveApi` immediately after building dispatch metadata and pass it to `addCallRecord`. Both routes default to `"cascading"` if the agent fetch fails, so the field is always present on new documents. Existing call history documents are not backfilled.
+> - **Why:** Cost analysis, quality comparison, and debugging all require knowing which pipeline ran each call. Without this field there is no way to filter or attribute call records to a specific pipeline mode after the fact.
+> - **Files:**
+>   - `src/lib/history.ts` _(pipelineMode added to CallRecord interface)_
+>   - `src/app/api/calls/outbound/route.ts` _(pipelineMode derived from agentData and written to call record)_
+>   - `src/app/api/calls/test/route.ts` _(pipelineMode derived from agentData and written to call record)_
+
+---
+
+> ### Gemini Live API — Dispatch Metadata and Key Resolution
+>
+> - **What changed:** **`DispatchMetadata`** extended with `useLiveApi: boolean` (always emitted), plus optional `liveApiModel`, `liveApiVoice`, and `liveApiKey`. **`ResolvedProviderKeys`** extended with `liveApiKey`. **`buildDispatchMetadata()`** now always writes `useLiveApi` (true/false) so the worker can branch without a null check; all existing cascading-pipeline fields (`llmApiKey`, `ttsApiKey`, `sttApiKey`, etc.) are always included in the JSON regardless of the toggle state to keep the shape stable for logging. When `useLiveApi` is true, `liveApiModel`, `liveApiVoice`, and `liveApiKey` are appended; when false they are omitted. **`resolveProviderKeys()`** adds resolution for `liveApiConfigId` → raw API key, using the same `getProviderConfig` path as the other three providers.
+> - **Why:** The agent worker reads all runtime config from dispatch metadata and must have everything it needs to construct the correct pipeline without Firestore access at call time. Keeping the cascading-pipeline fields in metadata regardless of the toggle means log consumers don't need to handle two different JSON shapes.
+> - **Files:**
+>   - `src/lib/agents/promptBuilder.ts` _(DispatchMetadata + ResolvedProviderKeys extended; buildDispatchMetadata always sets useLiveApi, conditionally appends Live API fields)_
+>   - `src/lib/firebase/resolveProviderKeys.ts` _(liveApiConfigId → liveApiKey resolution added)_
+
+---
+
+> ### Gemini Live API — Provider Key Resolution with Environment Fallback
+>
+> - **What changed:** `resolveProviderKeys()` now gates the entire Live API key lookup behind `vs?.useLiveApi` — when the toggle is off the Firestore read is skipped entirely. When the toggle is on and `liveApiConfigId` is set, the raw key is fetched from the `providerConfigs` vault as usual. When the toggle is on but no `liveApiConfigId` is configured, the function falls back to `process.env.GEMINI_API_KEY` and writes it into `result.liveApiKey`. The property was also renamed from `liveApiApiKey` → `liveApiKey` in both `ResolvedProviderKeys` and `DispatchMetadata` for naming consistency with the rest of the Live API field set.
+> - **Why:** Resolving a key on every dispatch for agents that never use the Live API wastes a Firestore read. The env fallback makes the feature usable out of the box — operators who rely on the global Gemini key don't need to re-enter it as a named vault credential. Raw keys resolved here stay server-side and never reach the browser.
+> - **Files:**
+>   - `src/lib/firebase/resolveProviderKeys.ts` _(useLiveApi guard; GEMINI_API_KEY env fallback; liveApiApiKey → liveApiKey rename)_
+>   - `src/lib/agents/promptBuilder.ts` _(liveApiApiKey → liveApiKey rename in DispatchMetadata, ResolvedProviderKeys, and buildDispatchMetadata)_
+
+---
+
+> ### Gemini Live API — Firestore Schema Extension
+>
+> - **What changed:** Added four new optional fields to the `voiceSettings` sub-object on `agents/{agentKey}` Firestore documents: `useLiveApi` (boolean, default absent = false), `liveApiModel` (string), `liveApiVoice` (string), and `liveApiConfigId` (string). All four are optional — existing documents require no migration and continue to operate on the STT→LLM→TTS pipeline. Updated the `VoiceSettings` TypeScript interface in `agents.ts` to declare all four fields. Extended `VoiceSettingsWriteSchema` (Zod) with corresponding validators so the fields pass through the Tier-1 write path to Firestore.
+> - **Why:** Each agent must be able to independently store its Live API preference and associated model/voice/key reference without losing its existing STT/LLM/TTS settings. These fields are the foundation for the per-agent toggle that swaps the modular pipeline for Google's native multimodal audio.
+> - **Files:**
+>   - `src/lib/firebase/agents.ts` _(VoiceSettings interface + VoiceSettingsWriteSchema extended with useLiveApi, liveApiModel, liveApiVoice, liveApiConfigId)_
+
+---
+
+> ### Gemini Live API — Zod Validation for Create/Update Endpoints
+>
+> - **What changed:** **`VoiceSettingsWriteSchema`:** added `.min(1)` to the three new string Live API fields so empty strings are rejected when a value is provided. **`POST /api/agents`:** replaced the bare `req.json()` destructure with a formal `CreateAgentBodySchema` (Zod) covering all existing creation fields plus an optional `voiceSettings` object accepting the four Live API fields; validation errors now return HTTP 400 with field-path messages (e.g. `voiceSettings.liveApiModel: String must contain at least 1 character(s)`). **`PATCH /api/agents/[agentKey]`:** error format updated from bare message strings to `path.field: message` format so Live API field violations are identified precisely. **`CreateAgentParams`** extended with the four optional Live API fields; **`createAgent()`** merges any provided values into the default `voiceSettings` at document creation time.
+> - **Why:** API routes must safely reject malformed input before it reaches Firestore. The POST route had no Zod schema at all, making it impossible to return structured validation errors. Field-level error paths let clients surface the exact invalid field without guessing.
+> - **Files:**
+>   - `src/lib/firebase/agents.ts` _(min(1) on string Live API fields; CreateAgentParams extended; createAgent merges initial Live API settings)_
+>   - `src/app/api/agents/route.ts` _(CreateAgentBodySchema added; POST uses safeParse; voiceSettings threaded to createAgent)_
+>   - `src/app/api/agents/[agentKey]/route.ts` _(PATCH error format includes field paths)_
 
 ---
 
