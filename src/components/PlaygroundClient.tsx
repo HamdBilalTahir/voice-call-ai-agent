@@ -115,13 +115,25 @@ function TranscriptCapture({
       }
 
       let accumulated = "";
-      for await (const chunk of reader) {
-        accumulated += chunk;
-        if (!mounted) return;
-        linesRef.current = linesRef.current.map((t) =>
-          t.segmentId === segmentId ? { ...t, text: accumulated } : t,
-        );
-        onUpdate([...linesRef.current]);
+      try {
+        for await (const chunk of reader) {
+          accumulated += chunk;
+          if (!mounted) return;
+          linesRef.current = linesRef.current.map((t) =>
+            t.segmentId === segmentId ? { ...t, text: accumulated } : t,
+          );
+          onUpdate([...linesRef.current]);
+        }
+      } catch {
+        // Agent disconnected mid-stream (DataStreamError) — mark segment final
+        // with whatever text was accumulated so far and stop reading.
+        if (mounted && accumulated) {
+          linesRef.current = linesRef.current.map((t) =>
+            t.segmentId === segmentId ? { ...t, isFinal: true } : t,
+          );
+          onUpdate([...linesRef.current]);
+        }
+        return;
       }
 
       if (!mounted) return;

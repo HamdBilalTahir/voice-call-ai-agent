@@ -49,39 +49,23 @@ export async function POST(req: Request) {
     // serve dynamic instructions without a separate Firestore read at runtime.
     let dispatchMetadata: string | undefined;
     let pipelineMode: "cascading" | "live_api" = "cascading";
+    let agentDataForDispatch: Awaited<ReturnType<typeof getAgent>> | undefined;
     try {
-      const agentData = await getAgent(agentKey);
-      if (agentData) {
-        const resolvedKeys = await resolveProviderKeys(agentData);
-        dispatchMetadata = buildDispatchMetadata(agentData, {}, resolvedKeys);
-        pipelineMode = agentData.voiceSettings?.useLiveApi
+      agentDataForDispatch = (await getAgent(agentKey)) ?? undefined;
+      if (agentDataForDispatch) {
+        pipelineMode = agentDataForDispatch.voiceSettings?.useLiveApi
           ? "live_api"
           : "cascading";
       }
     } catch (err) {
-      console.error(
-        "[calls/test] prompt fetch failed — using static fallback:",
-        err,
-      );
+      console.error("[calls/test] agent fetch failed:", err);
     }
-    console.info("[Pipeline] dispatch", { pipelineMode, agentKey, roomName });
 
-    // Add a 5 second timeout to prevent the UI from hanging on "Connecting..." forever
-    // if the LiveKit server or dispatch agent is unresponsive
-    const dispatchPromise = agentDispatchClient.createDispatch(
-      roomName,
-      dispatchRuleName,
-      dispatchMetadata ? { metadata: dispatchMetadata } : undefined,
-    );
-    const timeoutPromise = new Promise((_, reject) => {
-      setTimeout(() => reject(new Error("Agent dispatch timed out")), 5000);
-    });
-
-    await Promise.race([dispatchPromise, timeoutPromise]);
-
-    // Record playground browser test in call history
+    // Write call record BEFORE dispatch so callHistoryId can be included in
+    // dispatch metadata — the worker uses it as the foreign key for transcripts.
+    let callHistoryId: string | undefined;
     try {
-      await addCallRecord({
+      callHistoryId = await addCallRecord({
         id: roomName,
         roomName,
         agentKey,
@@ -95,6 +79,41 @@ export async function POST(req: Request) {
     } catch (err) {
       console.error("[calls/test] failed to write call record:", err);
     }
+
+    try {
+      if (agentDataForDispatch) {
+        const resolvedKeys = await resolveProviderKeys(agentDataForDispatch);
+        dispatchMetadata = buildDispatchMetadata(
+          agentDataForDispatch,
+          { agentKey, callHistoryId },
+          resolvedKeys,
+        );
+      }
+    } catch (err) {
+      console.error(
+        "[calls/test] prompt fetch failed — using static fallback:",
+        err,
+      );
+    }
+    console.info("[Pipeline] dispatch", {
+      pipelineMode,
+      agentKey,
+      roomName,
+      callHistoryId,
+    });
+
+    // Add a 5 second timeout to prevent the UI from hanging on "Connecting..." forever
+    // if the LiveKit server or dispatch agent is unresponsive
+    const dispatchPromise = agentDispatchClient.createDispatch(
+      roomName,
+      dispatchRuleName,
+      dispatchMetadata ? { metadata: dispatchMetadata } : undefined,
+    );
+    const timeoutPromise = new Promise((_, reject) => {
+      setTimeout(() => reject(new Error("Agent dispatch timed out")), 5000);
+    });
+
+    await Promise.race([dispatchPromise, timeoutPromise]);
 
     return NextResponse.json({
       success: true,

@@ -16,6 +16,38 @@
 
 ---
 
+### 🐛 Bug Fixes
+
+---
+
+> ### Live API — Transcript Writes Flushed Before Worker Exits (Fire-and-Forget Writes Were Abandoned on SIGTERM)
+>
+> - **What changed:** `appendTurn()` now returns `Promise<void>` instead of `void`. Within `runLiveApiSession`, a `pendingTranscriptWrites` array collects the promise for every turn saved via `saveTurn()`. The `close` event handler now calls `await Promise.allSettled(pendingTranscriptWrites)` before writing the usage file, ensuring all in-flight Firestore writes have settled before the process exits. Previously, when SIGTERM hit the worker after a call ended, any Firestore writes still in-flight (e.g., the last one or two turns) were abandoned — the process exited with pending async operations. The flush uses `allSettled` (not `all`) so a single failed write does not abort the others.
+> - **Why:** The LiveKit broker sends `room_finished` shortly after the room closes, and `killWorkerForRoom` sends SIGTERM to the worker process. Between the room-close event and SIGTERM there is a narrow window — typically only a few hundred milliseconds. Fire-and-forget Firestore writes that started just before the room closed were reliably lost, causing the last transcript turns to be missing from the subcollection.
+> - **Files:**
+>   - `src/lib/agents/genericEntry.ts` _(appendTurn return type changed to Promise<void>; pendingTranscriptWrites array added; saveTurn helper pushes promise; close handler flushes all writes via Promise.allSettled before writeUsage)_
+
+---
+
+> ### Widget Test — Transcript Subcollection Now Populated (callHistoryId Was Missing from Dispatch Metadata)
+>
+> - **What changed:** `POST /api/calls/test` now writes the call record to Firestore **before** building dispatch metadata, so `callHistoryId` is available to include in the metadata payload. Previously, `addCallRecord` was called after `createDispatch`, meaning `extra = {}` was passed to `buildDispatchMetadata` with no `callHistoryId`. The worker's `if (callHistoryId)` guard in `appendTurn` skipped every write, leaving the `transcripts` subcollection empty for all widget tests. The route now: (1) fetches agent data and derives `pipelineMode`, (2) writes the call record and captures the returned Firestore doc ID as `callHistoryId`, (3) builds dispatch metadata with `{ agentKey, callHistoryId }` in the `extra` object, (4) dispatches the agent. The `DataStreamError` thrown by the LiveKit browser SDK when the agent disconnects mid-transcription-stream is now also caught in `TranscriptCapture` — the incomplete segment is marked final with whatever text was accumulated rather than producing an unhandled promise rejection.
+> - **Why:** Without `callHistoryId` in dispatch metadata the worker had no Firestore document to write transcript turns to. The pattern matches the outbound route fix (call record before SIP participant creation) but was not applied to the widget test path at the same time.
+> - **Files:**
+>   - `src/app/api/calls/test/route.ts` _(addCallRecord moved before createDispatch; callHistoryId + agentKey passed to buildDispatchMetadata extra; duplicate addCallRecord at end removed)_
+>   - `src/components/PlaygroundClient.tsx` _(TranscriptCapture: try-catch around for-await loop; DataStreamError caught; partial segment marked isFinal on disconnect)_
+
+---
+
+> ### Live API — Agent Transcript Turns Now Captured via conversation_item_added (speech_created Was Broken)
+>
+> - **What changed:** The agent transcript capture in `runLiveApiSession` was switched from the `speech_created` event to the `conversation_item_added` event. The old handler read `ev.speechHandle.synthesizedText` which does not exist on `SpeechHandle` — the property was never defined in the SDK type, so it always produced an empty string and the `if (text.trim())` guard silently dropped every agent turn. The new handler listens to `conversation_item_added`, filters for `item.role === "assistant"`, and reads `item.textContent` (the `ChatMessage` getter that joins all text parts). This path is populated by the framework's internal activity — when an agent generation completes, it creates a `ChatMessage` with `role: "assistant"` and calls `_conversationItemAdded`, which emits the event. For models that support output transcription (`gemini-3.1-flash-live-preview`), `textContent` contains the spoken text. For native-audio-only models (`gemini-live-2.5-flash-native-audio`), `textContent` is empty and agent turns continue to be absent from the transcript.
+> - **Why:** The `SpeechCreatedEvent.speechHandle` field has no `synthesizedText` property — the SDK exposes `chatItems`, `done()`, `waitForPlayout()`, and internal lifecycle methods, but no raw text. Reading a non-existent property returned `undefined`, which fell through to `ev?.text` (also absent), then to `""`, and the turn was never saved. The bug caused zero agent transcript turns to be recorded across all Live API calls despite the subcollection write infrastructure being in place.
+> - **Files:**
+>   - `src/lib/agents/genericEntry.ts` _(speech_created listener replaced with conversation_item_added; agent text read via item.textContent; role filter added)_
+
+---
+
 > ### Live API — Worker Auto-Spawns per Call and Auto-Kills on Room Finish
 >
 > - **What changed:** Every outbound call now spawns a dedicated fresh worker process and kills it automatically when the call ends. `spawnWorker()` in `outbound/route.ts` spawns `src/lib/agents/worker/agent.ts` via `tsx`, pipes both stdout and stderr to the Next.js terminal, and resolves only once `"registered worker"` appears in stdout (15-second timeout). The worker PID is written to `.worker-pids/{roomName}.pid` via `saveWorkerPid()`. The `room_finished` LiveKit webhook handler calls `killWorkerForRoom(roomName)` which reads the PID file, sends SIGTERM, and deletes the file. This means declined calls, missed calls, and completed calls all clean up the worker. Worker stdout is forwarded to the parent Next.js process in real-time so all agent logs (`[Pipeline]`, `[Transcript]`, `[STT]`, `[Agent]`) appear directly in the terminal.

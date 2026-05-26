@@ -19,13 +19,13 @@ export type { AgentDefaults } from "./sessionBuilder";
 function appendTurn(
   callHistoryId: string,
   turn: object & { speaker: string; text: string },
-) {
+): Promise<void> {
   const logger = log();
   logger.info(
     { callHistoryId, speaker: turn.speaker, textLen: turn.text.length },
     "[Transcript] appending turn",
   );
-  getDb()
+  return getDb()
     .collection("callHistory")
     .doc(callHistoryId)
     .collection("transcripts")
@@ -112,6 +112,16 @@ async function runLiveApiSession(
     "[Pipeline] callHistoryId resolved",
   );
 
+  // Track all in-flight Firestore transcript writes so the close handler can
+  // await them before exiting — prevents turns being lost when SIGTERM fires.
+  const pendingTranscriptWrites: Promise<void>[] = [];
+
+  function saveTurn(turn: { speaker: string; text: string }) {
+    if (!callHistoryId) return;
+    const p = appendTurn(callHistoryId, turn);
+    pendingTranscriptWrites.push(p);
+  }
+
   s.on("user_input_transcribed", (ev: any) => {
     logger.info(
       { transcript: ev.transcript, isFinal: ev.isFinal },
@@ -119,12 +129,7 @@ async function runLiveApiSession(
     );
     if (ev.isFinal && ev.transcript?.trim()) {
       console.log(`[Transcript] User: ${ev.transcript.trim()}`);
-      if (callHistoryId) {
-        appendTurn(callHistoryId, {
-          speaker: "user",
-          text: ev.transcript.trim(),
-        });
-      }
+      saveTurn({ speaker: "user", text: ev.transcript.trim() });
     }
   });
   s.on("agent_state_changed", (ev: any) => {
@@ -134,20 +139,19 @@ async function runLiveApiSession(
       "[Agent] state changed",
     );
   });
-  s.on("speech_created", (ev: any) => {
-    const text = ev?.speechHandle?.synthesizedText ?? ev?.text ?? "";
-    if (text?.trim()) {
-      console.log(`[Transcript] Agent: ${text.trim()}`);
-      if (callHistoryId) {
-        appendTurn(callHistoryId, { speaker: "agent", text: text.trim() });
-      }
-    } else {
-      console.log(`[Agent] speech_created (native audio — no text capture)`);
-    }
+  s.on("conversation_item_added", (ev: any) => {
+    const item = ev?.item;
+    const role: string = item?.role ?? "";
+    // textContent getter joins all text parts; undefined when native audio has no transcription
+    const text: string = (item?.textContent ?? "").trim();
     logger.info(
-      { textLen: text?.length, hasCallHistoryId: !!callHistoryId },
-      "[Agent] speech_created",
+      { role, textLen: text.length },
+      "[Transcript] conversation_item_added",
     );
+    if (role === "assistant" && text) {
+      console.log(`[Transcript] Agent: ${text}`);
+      saveTurn({ speaker: "agent", text });
+    }
   });
   s.on("error", (ev: any) => {
     logger.error({ err: ev.error }, "[Error] session error");
@@ -234,7 +238,7 @@ async function runLiveApiSession(
   // Use AgentSession.generateReply which routes through the active internal
   // activity — the correct path to the live Gemini session.
   try {
-    await (session as any).generateReply({ userMessage: "." });
+    await (session as any).generateReply({ userInput: "." });
     logger.info({}, "[Pipeline] greeting trigger injected");
   } catch (err) {
     logger.warn({ err }, "[Pipeline] greeting trigger failed (generateReply)");
@@ -242,6 +246,17 @@ async function runLiveApiSession(
 
   s.once("close", async () => {
     const durationMs = Date.now() - callStartMs;
+
+    // Flush all in-flight transcript writes before the worker exits.
+    if (pendingTranscriptWrites.length > 0) {
+      logger.info(
+        { count: pendingTranscriptWrites.length },
+        "[Transcript] flushing pending writes before close",
+      );
+      await Promise.allSettled(pendingTranscriptWrites);
+      logger.info({}, "[Transcript] flush complete");
+    }
+
     try {
       writeUsage(roomName, {
         type: "call_usage",
