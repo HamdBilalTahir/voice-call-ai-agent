@@ -310,10 +310,31 @@ async function runLiveApiSession(
   });
   logger.info({}, "[Pipeline] session.start() returned — agent is live");
 
-  // gemini-3.1-flash-live-preview (and other native audio models) do not support
-  // generateReply — calling it produces a warning and corrupts session state,
-  // causing the next speech handle to stall. The model greets naturally when
-  // the user's first audio input arrives.
+  // Trigger the initial greeting.
+  // gemini-3.1-* blocks generateReply(); use sendRealtimeInput text trigger instead.
+  // All other models support generateReply() directly.
+  switch (true) {
+    case model.includes("3.1"):
+      try {
+        const rtSession = (session as any).activity?.realtimeSession;
+        if (!rtSession) throw new Error("realtimeSession not available");
+        rtSession.sendClientEvent({
+          type: "realtime_input",
+          value: { text: "[call connected]" },
+        });
+        logger.info({}, "[Pipeline] sendRealtimeInput text trigger sent");
+      } catch (err) {
+        logger.warn({ err }, "[Pipeline] greeting trigger failed");
+      }
+      break;
+    default:
+      try {
+        await session.generateReply();
+        logger.info({}, "[Pipeline] initial generateReply() sent");
+      } catch (err) {
+        logger.warn({ err }, "[Pipeline] generateReply() failed");
+      }
+  }
 
   s.once("close", async () => {
     clearInterval(thinkingWatchdog);

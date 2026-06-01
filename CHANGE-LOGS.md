@@ -2,6 +2,21 @@
 
 ---
 
+### 🐛 Bug Fixes
+
+---
+
+> ### Live API — Greeting Now Spoken Immediately on Call Connect (gemini-3.1 + 2.5 Fix)
+>
+> - **What changed:** The Live API pipeline in `runLiveApiSession` now triggers the greeting immediately after `session.start()` instead of waiting for the first user audio input. A `switch (true)` gates on the model string:
+>   - **`model.includes("3.1")`** → drills `session → activity → realtimeSession` and calls `rtSession.sendClientEvent({ type: "realtime_input", value: { text: "[call connected]" } })`. This routes through the internal `sendTask` message queue to `session.sendRealtimeInput({ text })`, which is the documented mechanism for triggering a model response on `gemini-3.1-flash-live-preview` (where `generateReply` and `proactivity` are both blocked by the SDK and the Google API respectively).
+>   - **all other models** → calls `await session.generateReply()` directly (supported on 2.5+ native audio models).
+> - **Why:** The greeting was injected into the system prompt via `buildLiveApiInstructions` (`[VOICE SESSION START]: … say it right now`), but Gemini Live API doesn't proactively speak from system instructions alone — it waits for a user turn. For `gemini-3.1-flash-live-preview` specifically: the SDK blocks `generateReply()` via a `!model.includes("3.1")` capability check; Google's docs state that `proactivity` and affective dialogue are not yet supported on 3.1; `send_client_content` requires `history_config.initial_history_in_client_content: true` which the LiveKit SDK does not expose. `sendRealtimeInput` with text is the only supported path on 3.1 to immediately prompt a model response.
+> - **Files:**
+>   - `src/lib/agents/genericEntry.ts` _(switch on model string after session.start(); 3.1 branch uses sendClientEvent realtime_input text trigger; default branch uses session.generateReply())_
+
+---
+
 ### ✨ Features
 
 ---
