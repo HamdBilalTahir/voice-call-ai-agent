@@ -17,6 +17,15 @@
 
 ---
 
+> ### Call History — Usage/Cost Now Persisted Even When Webhook Beats the Worker (Race Fix)
+>
+> - **What changed:** `GET /api/calls/[roomName]/usage` now fires a fire-and-forget `updateCallRecord` write to Firestore whenever it successfully reads the usage file. Previously the endpoint only returned the data to the caller (the playground polling loop) without persisting it.
+> - **Why:** The `room_finished` LiveKit webhook and the agent worker's `close` event handler race to write / read the same `.agent-usage/{roomName}.json` file. When the webhook fires first (common in low-latency local + ngrok setups), it reads a file that doesn't exist yet, silently skips the usage block, and marks the call completed with no usage data. The call record is then frozen — nothing ever retries the write. The playground UI calculated cost correctly because it polls the usage endpoint independently, but that data never reached Firestore and the call history showed `—` for tokens and cost. The fix makes the usage endpoint the fallback writer: the first successful poll after the file is ready persists the usage. The write is idempotent — if the webhook already wrote the usage, the same data is written again harmlessly.
+> - **Files:**
+>   - `src/app/api/calls/[roomName]/usage/route.ts` _(on successful file read: fire-and-forget updateCallRecord with usage; import CallUsage + updateCallRecord from history)_
+
+---
+
 ### ✨ Features
 
 ---
