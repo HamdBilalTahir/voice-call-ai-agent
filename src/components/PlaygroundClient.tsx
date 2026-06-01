@@ -511,6 +511,14 @@ function WebTestPanel({
           if (++attempts < 5) setTimeout(tryFetch, 1500);
         };
         setTimeout(tryFetch, 2000);
+        // Fallback: mark the call completed from the client side after 15s
+        // in case the room_finished webhook was unreachable (e.g. no tunnel).
+        // The API route is a no-op if the webhook already updated the status.
+        setTimeout(() => {
+          fetch(`/api/calls/${room}/complete`, { method: "POST" }).catch(
+            () => {},
+          );
+        }, 15000);
       }}
     >
       <WebCallWidget />
@@ -528,10 +536,36 @@ function WebTestPanel({
 // Rendered inside <LiveKitRoom> so hooks can access the room context.
 
 function WebCallWidget() {
-  const { state: agentState } = useVoiceAssistant();
+  const { state: agentState, agent } = useVoiceAssistant();
   const { localParticipant } = useLocalParticipant();
   const room = useRoomContext();
   const micEnabled = localParticipant?.isMicrophoneEnabled ?? true;
+
+  // Track whether the agent participant was ever present so we don't react to
+  // the initial undefined state before the agent has joined.
+  const agentWasPresent = useRef(false);
+  useEffect(() => {
+    if (agent !== undefined) agentWasPresent.current = true;
+  }, [agent]);
+
+  // When the agent worker closes server-side (e.g. farewell detection calling
+  // ctx.room.disconnect()), the agent participant leaves the room. The browser
+  // client stays connected so onDisconnected never fires naturally. Detect the
+  // agent participant becoming undefined (left the room) and self-disconnect.
+  // The cleanup function cancels the timer if the agent reconnects before 3s
+  // (covers brief WebSocket drop/reconnect scenarios).
+  useEffect(() => {
+    if (agent === undefined && agentWasPresent.current) {
+      const timer = setTimeout(() => {
+        try {
+          room.disconnect();
+        } catch {
+          /* already disconnecting */
+        }
+      }, 3000);
+      return () => clearTimeout(timer);
+    }
+  }, [agent, room]);
 
   const isSpeaking = agentState === "speaking";
   const isThinking = agentState === "thinking";

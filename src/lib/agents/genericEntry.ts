@@ -9,14 +9,14 @@ import {
   buildSession,
   buildLiveApiInstructions,
 } from "./sessionBuilder";
-import { buildVoiceTools } from "./voiceTools";
+import { buildVoiceTools, isFarewell } from "./voiceTools";
 import { getDb } from "./workerFirestore";
 
 export type { AgentDefaults } from "./sessionBuilder";
 
 // ── Shared helpers ────────────────────────────────────────────────────────────
 
-function appendTurn(
+async function appendTurn(
   callHistoryId: string,
   turn: object & { speaker: string; text: string },
 ): Promise<void> {
@@ -25,23 +25,19 @@ function appendTurn(
     { callHistoryId, speaker: turn.speaker, textLen: turn.text.length },
     "[Transcript] appending turn",
   );
-  return getDb()
-    .collection("callHistory")
-    .doc(callHistoryId)
-    .collection("transcripts")
-    .add({ ...turn, ts: Date.now() })
-    .then(() =>
-      logger.info(
-        { callHistoryId, speaker: turn.speaker },
-        "[Transcript] turn saved to Firestore",
-      ),
-    )
-    .catch((err) =>
-      logger.error(
-        { err, callHistoryId },
-        "[Transcript] Firestore write failed",
-      ),
+  try {
+    await getDb()
+      .collection("callHistory")
+      .doc(callHistoryId)
+      .collection("transcripts")
+      .add({ ...turn, ts: Date.now() });
+    logger.info(
+      { callHistoryId, speaker: turn.speaker },
+      "[Transcript] turn saved to Firestore",
     );
+  } catch (err) {
+    logger.error({ err, callHistoryId }, "[Transcript] Firestore write failed");
+  }
 }
 
 function writeUsage(roomName: string, payload: object) {
@@ -132,13 +128,35 @@ async function runLiveApiSession(
       saveTurn({ speaker: "user", text: ev.transcript.trim() });
     }
   });
+  let thinkingStartMs: number | null = null;
   s.on("agent_state_changed", (ev: any) => {
     console.log(`[Agent] state: ${ev.oldState} → ${ev.newState}`);
     logger.info(
       { from: ev.oldState, to: ev.newState },
       "[Agent] state changed",
     );
+    thinkingStartMs = ev.newState === "thinking" ? Date.now() : null;
   });
+
+  // Safety-net watchdog: concurrent tool calls are now handled by the
+  // optimistic pattern in voiceTools — at most one speech handle should be
+  // open at any time, so this should never fire in practice. Kept as a
+  // last-resort fallback for any unexpected stall scenario.
+  const thinkingWatchdog = setInterval(() => {
+    if (!thinkingStartMs) return;
+    const stuckMs = Date.now() - thinkingStartMs;
+    if (stuckMs < 30_000) return;
+    logger.warn(
+      { stuckMs },
+      "[Pipeline] agent stuck in thinking for 30s — calling interrupt() as last resort",
+    );
+    thinkingStartMs = null;
+    try {
+      (session as any).interrupt();
+    } catch (err) {
+      logger.warn({ err }, "[Pipeline] interrupt() failed");
+    }
+  }, 5_000);
   s.on("conversation_item_added", (ev: any) => {
     const item = ev?.item;
     const role: string = item?.role ?? "";
@@ -151,6 +169,22 @@ async function runLiveApiSession(
     if (role === "assistant" && text) {
       console.log(`[Transcript] Agent: ${text}`);
       saveTurn({ speaker: "agent", text });
+
+      // Farewell detection — disconnect after agent speaks a closing phrase.
+      // Replaces the end_call tool which caused concurrent speech handle races.
+      if (isFarewell(text)) {
+        logger.info(
+          { text },
+          "[Pipeline] farewell detected — scheduling disconnect",
+        );
+        setTimeout(() => {
+          try {
+            ctx.room.disconnect();
+          } catch {
+            /* already closing */
+          }
+        }, 3000);
+      }
     }
   });
   s.on("error", (ev: any) => {
@@ -215,11 +249,53 @@ async function runLiveApiSession(
   );
 
   // Build function-call tools that Gemini executes silently (no spoken output).
-  const tools = buildVoiceTools(ctx, roomName, meta.agentKey);
+  const tools = buildVoiceTools();
   logger.info(
     { toolCount: Object.keys(tools).length, tools: Object.keys(tools) },
     "[Pipeline] tools built",
   );
+
+  // Warn about any snake_case identifiers in the prompt that look like tool
+  // references but have no matching registered tool — these were likely copied
+  // from a different agent's prompt and will be silently unavailable to Gemini.
+  const registeredTools = new Set(Object.keys(tools));
+  const toolVerbPrefixes = [
+    "create_",
+    "update_",
+    "delete_",
+    "change_",
+    "schedule_",
+    "send_",
+    "end_",
+    "get_",
+    "set_",
+    "add_",
+    "remove_",
+    "list_",
+    "fetch_",
+    "book_",
+    "cancel_",
+    "search_",
+  ];
+  const promptRefs = [
+    ...new Set(
+      (baseInstructions ?? "").match(/\b[a-z][a-z0-9]*(?:_[a-z0-9]+)+\b/g) ??
+        [],
+    ),
+  ];
+  const missingTools = promptRefs.filter(
+    (ref) =>
+      !registeredTools.has(ref) &&
+      toolVerbPrefixes.some((prefix) => ref.startsWith(prefix)),
+  );
+  if (missingTools.length > 0) {
+    for (const name of missingTools) {
+      logger.warn(
+        { toolName: name },
+        `[Pipeline] prompt references tool "${name}" which is not registered — it will be unavailable`,
+      );
+    }
+  }
 
   logger.info(
     { sipParticipantIdentity: meta.sipParticipantIdentity },
@@ -234,17 +310,13 @@ async function runLiveApiSession(
   });
   logger.info({}, "[Pipeline] session.start() returned — agent is live");
 
-  // Gemini Live API waits for a user turn before generating output.
-  // Use AgentSession.generateReply which routes through the active internal
-  // activity — the correct path to the live Gemini session.
-  try {
-    await (session as any).generateReply({ userInput: "." });
-    logger.info({}, "[Pipeline] greeting trigger injected");
-  } catch (err) {
-    logger.warn({ err }, "[Pipeline] greeting trigger failed (generateReply)");
-  }
+  // gemini-3.1-flash-live-preview (and other native audio models) do not support
+  // generateReply — calling it produces a warning and corrupts session state,
+  // causing the next speech handle to stall. The model greets naturally when
+  // the user's first audio input arrives.
 
   s.once("close", async () => {
+    clearInterval(thinkingWatchdog);
     const durationMs = Date.now() - callStartMs;
 
     // Flush all in-flight transcript writes before the worker exits.

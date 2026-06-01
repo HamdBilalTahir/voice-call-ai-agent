@@ -14,6 +14,7 @@ import {
   FileText,
   X,
   Check,
+  Copy,
   ChevronUp,
   ChevronDown,
   Smile,
@@ -211,7 +212,10 @@ function filtersEqual(a: FilterState, b: FilterState) {
 
 // ── Cost helpers ──────────────────────────────────────────────────────────────
 
-function usageCost(usage: CallUsage) {
+function usageCost(
+  usage: CallUsage,
+  record?: Pick<CallRecord, "extractionInputTokens" | "extractionOutputTokens">,
+) {
   return calculateCost({
     llmProvider: "",
     llmModel: usage.llmModel,
@@ -225,6 +229,9 @@ function usageCost(usage: CallUsage) {
     ttsCharacters: usage.ttsCharacters,
     ttsAudioMs: usage.ttsAudioMs,
     callDurationMs: usage.callDurationMs,
+    extractionModel: "gemini-2.5-flash",
+    extractionInputTokens: record?.extractionInputTokens,
+    extractionOutputTokens: record?.extractionOutputTokens,
   });
 }
 
@@ -329,6 +336,7 @@ function CallSlideOver({
     ts: number;
   }> | null>(null);
   const [transcriptLoading, setTranscriptLoading] = useState(false);
+  const [transcriptCopied, setTranscriptCopied] = useState(false);
 
   const agent = agents.find((a) => a.key === record.agentKey);
   const direction = deriveDirection(record, agents);
@@ -523,7 +531,7 @@ function CallSlideOver({
 
               {record.usage &&
                 (() => {
-                  const cost = usageCost(record.usage);
+                  const cost = usageCost(record.usage, record);
                   return (
                     <div>
                       <p className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground mb-2">
@@ -642,6 +650,36 @@ function CallSlideOver({
                 </div>
               ) : transcriptTurns && transcriptTurns.length > 0 ? (
                 <div className="space-y-4">
+                  <div className="flex justify-end">
+                    <button
+                      onClick={() => {
+                        const text = transcriptTurns
+                          .map((t) => {
+                            const time = new Date(t.ts).toLocaleTimeString([], {
+                              hour: "2-digit",
+                              minute: "2-digit",
+                              second: "2-digit",
+                            });
+                            const speaker =
+                              t.speaker === "agent" ? "Agent" : "Caller";
+                            return `[${time}] ${speaker}: ${t.text}`;
+                          })
+                          .join("\n");
+                        void navigator.clipboard.writeText(text).then(() => {
+                          setTranscriptCopied(true);
+                          setTimeout(() => setTranscriptCopied(false), 2000);
+                        });
+                      }}
+                      className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-[11px] font-medium text-muted-foreground hover:text-foreground hover:bg-accent border border-transparent hover:border-border transition-colors"
+                    >
+                      {transcriptCopied ? (
+                        <Check className="size-3.5 text-success" />
+                      ) : (
+                        <Copy className="size-3.5" />
+                      )}
+                      {transcriptCopied ? "Copied!" : "Copy transcript"}
+                    </button>
+                  </div>
                   {transcriptTurns.map((turn, i) => {
                     const isAgent = turn.speaker === "agent";
                     const time = new Date(turn.ts).toLocaleTimeString([], {
@@ -1493,10 +1531,15 @@ export function CallHistoryClient({ agents }: { agents: AgentConfig[] }) {
                           {record.usage ? (
                             <div className="flex flex-col gap-0.5">
                               <span className="text-xs font-semibold text-foreground tabular-nums whitespace-nowrap">
-                                ~{formatCost(usageCost(record.usage).total)}
+                                ~
+                                {formatCost(
+                                  usageCost(record.usage, record).total,
+                                )}
                               </span>
                               <span className="text-[10px] text-muted-foreground tabular-nums whitespace-nowrap">
-                                {formatCost(usageCost(record.usage).perMinute)}
+                                {formatCost(
+                                  usageCost(record.usage, record).perMinute,
+                                )}
                                 /min
                               </span>
                             </div>

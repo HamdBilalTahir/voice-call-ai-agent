@@ -85,7 +85,7 @@ export function buildDispatchMetadata(
 }
 
 export const PLATFORM_VOICE_RULES =
-  'You are speaking to the user over a voice call. Keep your responses short and conversational. DO NOT use markdown, bullet points, or special characters. Use natural filler phrases like "umm" or "let me think" sparingly. If the user interrupts you, stop talking and listen gracefully. When you call tools (create_custom_task, update_qualification, schedule_meeting, etc.), do it silently in the background — never narrate, announce, or describe the tool call to the caller. Simply continue the conversation naturally.';
+  'You are speaking to the user over a voice call. Keep your responses short and conversational. DO NOT use markdown, bullet points, or special characters. Use natural filler phrases like "umm" or "let me think" sparingly. If the user interrupts you, stop talking and listen gracefully. Focus on having a natural conversation — all data collection happens automatically after the call ends.';
 
 export interface PromptFields {
   roleAndResponsibilities?: string;

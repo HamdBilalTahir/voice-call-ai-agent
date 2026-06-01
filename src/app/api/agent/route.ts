@@ -4,6 +4,7 @@ import { NextResponse } from "next/server";
 import { verifyLiveKitWebhook } from "@/lib/livekit";
 import { getCallRecord, updateCallRecord, type CallUsage } from "@/lib/history";
 import { killWorkerForRoom } from "@/app/api/calls/outbound/route";
+import { extractCallData } from "@/lib/agents/callExtractor";
 
 export async function POST(req: Request) {
   try {
@@ -84,6 +85,14 @@ export async function POST(req: Request) {
         console.log(
           `[webhook] room_finished — marked ${roomName} completed (${duration}s)${usage ? ", usage saved" : ""}`,
         );
+
+        // Fire-and-forget post-call extraction — reads the transcript subcollection
+        // and runs an LLM pass to extract qualification, tasks, meeting, and messages.
+        if (record.id && record.agentKey) {
+          extractCallData(record.id, record.agentKey, roomName).catch((err) => {
+            console.error("[webhook] post-call extraction failed:", err);
+          });
+        }
       }
     }
 

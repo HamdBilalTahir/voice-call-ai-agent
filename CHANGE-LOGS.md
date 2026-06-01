@@ -1,8 +1,174 @@
+## 🗓️ **2026-06-01**
+
+---
+
+### ✨ Features
+
+---
+
+> ### Playground — Client-Side Call Completion Fallback
+>
+> - **What changed:** A new `POST /api/calls/[roomName]/complete` route was added. It reads the call record and, if the status is still `"in-progress"`, sets it to `"completed"` with the current timestamp and calculated duration. `PlaygroundClient.onDisconnected` now fires this endpoint 15 seconds after disconnect — long enough for the `room_finished` webhook to arrive first (which is the preferred path), but short enough to catch it if the webhook was unreachable (e.g. no ngrok tunnel). The route returns `{ skipped: "already completed" }` when the webhook already handled it, making it a no-op in the normal flow.
+> - **Why:** Widget test calls running against a local dev server only receive LiveKit `room_finished` webhooks if a public tunnel (ngrok) is running at the time the room closes. Calls that ended before a tunnel was started stay stuck as `"in-progress"` indefinitely. The 15-second client-side fallback covers this scenario without interfering with the authoritative webhook path — the webhook wins if it arrives within those 15 seconds; the client fallback wins otherwise.
+> - **Files:**
+>   - `src/app/api/calls/[roomName]/complete/route.ts` _(new — POST handler; reads call record; updates status/outcome/endTime/duration only if still in-progress)_
+>   - `src/components/PlaygroundClient.tsx` _(onDisconnected: 15s setTimeout fires POST /api/calls/{room}/complete after usage polling starts)_
+
+---
+
+> ### Agent Prompt — Sarah (Layref) Sections Revised After Live Call Analysis
+>
+> - **What changed:** All four prompt sections for the Sarah LAYREF agent (`gZpvYpAgmk9WShjXqF8G`) were rewritten and pushed directly to Firestore (both the parent agent doc and `config/voice` subcollection). Key changes per section:
+>   - **roleAndResponsibilities:** Added mandatory market-name confirmation before proceeding ("Just to confirm — you said Greece, is that right?"). Added three discovery questions (what caught your interest, prior investment experience, goal) that must happen before qualification data is collected. Meeting slots are now offered once only — if the caller hesitates the agent asks "what time works better?" instead of repeating the same slots. Full objection-handling paths added for confused callers, callers who need time, and callers who want to speak to a human. Dead tool references removed (`create_custom_task`, `close chat`, `send_message`). Agent no longer promises to "send a message" during the call — uses "our team will follow up" instead. Word limit raised from 40 → 50.
+>   - **personaLanguageAndTone:** Added explicit pacing rules — wait for the caller to finish, match their energy, stop pushing when they say they need a moment. Word limit aligned to 50.
+>   - **mistakesToAvoid:** Removed entire follow-up task block (tools removed) and cal-tool-failure block (tool removed). Added: never assume the market name was heard correctly — always confirm. Added: offer meeting slots once only, then open-ended. Added: don't push for a booking after the caller declines or hesitates. Added: don't promise outbound messages during the call.
+>   - **additionalInstructions:** Removed dead tool block ("Call simultaneously: update_qualification, send_message, change_lead_status"). Removed "Always create follow-up tasks after messages". Added Greece market context (previously almost entirely Dubai-focused). Added note that all data is extracted automatically post-call so the agent should focus on conversation, not explicit collection. Qualification checklist updated to require verbal market confirmation and at least one discovery question before data collection.
+> - **Why:** A live test call revealed three failure modes: (1) agent jumped from the caller's name straight to budget/contact/meeting slots with no discovery, causing the caller to say "you didn't even ask any questions"; (2) the same two meeting slots were repeated four times even after the caller expressed confusion; (3) the prompt contained extensive instructions for tools that no longer exist (`create_custom_task`, `send_message`, `change_lead_status`, `schedule_meeting`, `close_chat`) — dead weight that could confuse Gemini. Additionally, the agent misheard "breeze" as "Greece" and proceeded without confirming, derailing the entire call on a false premise.
+> - **Where:** Firestore — `agents/gZpvYpAgmk9WShjXqF8G` (parent doc) and `agents/gZpvYpAgmk9WShjXqF8G/config/voice` (subcollection)
+
+---
+
+> ### Call History — Copy Transcript Button
+>
+> - **What changed:** A "Copy transcript" button now appears in the top-right corner of the Transcript tab when turns have loaded. Clicking it formats all turns as `[HH:MM:SS] Speaker: text` lines joined by newlines and writes them to the clipboard via `navigator.clipboard.writeText`. The button icon switches to a green checkmark and the label changes to "Copied!" for 2 seconds before reverting. A `transcriptCopied` boolean state drives the visual feedback.
+> - **Why:** Operators frequently need to paste call transcripts into other tools (CRMs, reports, review threads) and the chat-bubble layout in the UI is not copy-pasteable as plain text. The formatted output preserves speaker attribution and timestamps in a human-readable format that pastes cleanly anywhere.
+> - **Files:**
+>   - `src/components/CallHistoryClient.tsx` _(Copy icon imported; transcriptCopied state; copy button with clipboard write + 2s feedback above transcript turns)_
+
+---
+
+> ### Architecture — Post-Call LLM Extraction Replaces Mid-Call Tool Calls
+>
+> - **What changed:** All data-collection tools (`create_custom_task`, `delete_task`, `update_qualification`, `change_lead_status`, `schedule_meeting`, `send_message`) have been removed from the in-call tool set. A new post-call extraction step runs automatically when `room_finished` fires: it reads the `transcripts` subcollection, fetches the agent's compiled system prompt from Firestore, resolves the agent's Gemini API key, and sends both to `gemini-2.0-flash` with a structured extraction prompt. The LLM returns a JSON payload covering qualification fields, follow-up tasks, a meeting booking (if discussed), and queued messages. Results are written to the same Firestore collections as before (`call_qualifications`, `call_tasks`, `call_meetings`, `call_messages`) with an added `source: "post_call_extraction"` field for traceability. The extraction runs fire-and-forget from the webhook handler so it never blocks the LiveKit webhook response. The `PLATFORM_VOICE_RULES` constant was updated to remove references to mid-call tool usage. The only remaining in-call tool is `end_call`.
+> - **Why:** Mid-call tool calls caused the Gemini Live API to dispatch multiple function calls in a single turn, which created competing speech handles in the LiveKit SDK's `SegmentSynchronizer`, deadlocking the audio pipeline and leaving the caller in silence. More fundamentally, the tools were solving the wrong problem: Gemini does not need to call Firestore to "remember" what the caller said — that information is already in its context window throughout the call. The tools were purely a persistence mechanism, not a cognitive one. Moving persistence to a post-call extraction pass gives the agent a completely uninterrupted conversational flow where the prompt drives all scenario handling, and structured data is extracted from the finished transcript once without any risk of mid-call stalls.
+> - **Files:**
+>   - `src/lib/agents/callExtractor.ts` _(new — reads transcripts subcollection, builds extraction prompt from agent system prompt + transcript, calls gemini-2.0-flash, writes qualification/tasks/meeting/messages to Firestore)_
+>   - `src/app/api/agent/route.ts` _(room_finished handler: extractCallData() called fire-and-forget after updateCallRecord)_
+>   - `src/lib/agents/voiceTools.ts` _(6 data-collection tools removed; only end_call remains; toolInFlight logic removed as no longer needed)_
+>   - `src/lib/agents/promptBuilder.ts` _(PLATFORM_VOICE_RULES updated to remove references to mid-call tool calls)_
+
+---
+
+### 🐛 Bug Fixes
+
+---
+
+> ### Live API — @livekit/agents Upgraded to 1.4.4 (Playback Flush and Interruption Race Conditions Fixed)
+>
+> - **What changed:** All `@livekit/agents` and `@livekit/agents-plugin-*` packages upgraded from 1.4.3 to 1.4.4. All 7 plugin packages (`cartesia`, `deepgram`, `elevenlabs`, `google`, `openai`, `silero`, plus core) were updated together to keep versions aligned.
+> - **Why:** 1.4.4 includes two fixes directly relevant to the audio stall issue: "Fixed playback flush and speech interruption race conditions" and "Addressed realtime generation cancellation when user speech interrupts the agent." These target the scenario where user speech arrives while a Gemini tool call is still mid-flight, which is exactly when the `SegmentSynchronizerImpl` deadlocked. Ultimately the root fix is the architectural removal of mid-call tools, but the SDK upgrade also improves stability for any remaining concurrent audio events.
+> - **Files:**
+>   - `package.json` / `package-lock.json` _(all @livekit/agents\* packages bumped to 1.4.4)_
+
+---
+
+> ### Live API — Thinking State Watchdog Added as Last-Resort Recovery
+>
+> - **What changed:** `runLiveApiSession` now tracks when the agent enters the `thinking` state via `agent_state_changed`. A `setInterval` watchdog fires every 5 seconds. If the agent has been continuously in `thinking` for more than 30 seconds it calls `(session as any).interrupt()` to force the session back to listening, then resets the timer to prevent re-triggering on the same stall. The interval is cleared in the `close` handler.
+> - **Why:** With mid-call tools removed, this watchdog should never fire in normal operation. It is kept as a last-resort safety net for any unexpected future stall scenario (e.g., a network hiccup causing a Gemini generation to hang). 30 seconds was chosen as a clearly-anomalous threshold that avoids false positives during legitimate long thinking pauses. The previous 8-second watchdog was designed to recover from the tool-call race condition; since that race is now eliminated architecturally, the threshold was raised significantly.
+> - **Files:**
+>   - `src/lib/agents/genericEntry.ts` _(thinkingStartMs tracked in agent_state_changed; thinkingWatchdog interval; interrupt() called at 30s; interval cleared on close)_
+
+---
+
+> ### Live API — @livekit/agents Downgraded 1.4.4 → 1.4.3 (rotateSegment Fatal Crash Regression)
+>
+> - **What changed:** All `@livekit/agents` and `@livekit/agents-plugin-*` packages were rolled back from 1.4.4 to 1.4.3. All 7 packages reverted together.
+> - **Why:** 1.4.4 introduced a regression: a phantom `onInputSpeechStopped` event that Gemini emits internally when finalising a user turn was treated as a real speech-stop event. The SDK called `rotateSegment` while a previous rotation was still in progress, logged `"rotateSegment called while previous segment is still being rotated"`, and immediately exited `AgentActivity mainTask`, dropping the call mid-conversation with `reason: "user_initiated"`. The original reason for upgrading to 1.4.4 (concurrent speech handle deadlock from parallel tool calls) is now eliminated architecturally — all data-collection tools were removed — so reverting to 1.4.3 is safe and stable.
+> - **Files:**
+>   - `package.json` / `package-lock.json` _(all @livekit/agents\* packages rolled back to ^1.4.3)_
+
+---
+
+> ### Live API — Session Crash Fix: end_call + Concurrent Speech Handle Race
+>
+> - **What changed:** Two changes to `buildVoiceTools` and one to its call site: (1) The `end_call` tool description was tightened to only trigger after an explicit caller farewell phrase (`"bye"`, `"goodbye"`, `"thanks, take care"`) — the previous wording `"conversation is fully complete"` was too broad and caused Gemini to call the tool mid-conversation when it judged data collection to be done. (2) `session.interrupt()` is now called inside the `end_call` execute function before the `ctx.room.disconnect()` timeout, cancelling any concurrent in-flight speech handle before the room closes. (3) The `AgentSession` object is now passed into `buildVoiceTools` as a second parameter so the execute function has access to `interrupt()`.
+> - **Why:** Even with only one remaining tool, Gemini can emit both a text response and a tool call in the same generation turn. When this happened with `end_call`, the SDK created two concurrent speech handles — one for the tool response, one for the text response. Both completed near-simultaneously on interrupt, triggering two `rotateSegment` calls that raced → `AgentActivity mainTask: exiting` → `reason: "user_initiated"` session close mid-call. The `session.interrupt()` call collapses the concurrent handle before the room disconnects. The description fix prevents Gemini from prematurely calling `end_call` before the caller says goodbye.
+> - **Files:**
+>   - `src/lib/agents/voiceTools.ts` _(end_call description rewritten; session param added to buildVoiceTools signature; session.interrupt() called in execute; disconnect delay reduced 2500 → 1500ms)_
+>   - `src/lib/agents/genericEntry.ts` _(session passed as second arg to buildVoiceTools)_
+
+---
+
+> ### Playground — Widget Resets When Agent Session Closes Server-Side
+>
+> - **What changed:** `WebCallWidget` now tracks when the agent participant (`agent` from `useVoiceAssistant()`) transitions from present to absent (i.e., the agent left the room). A `useRef` (`agentWasPresent`) flips to `true` the first time `agent !== undefined`. When `agent` becomes `undefined` after having been present, a 3-second timer fires `room.disconnect()` from the browser side. This triggers the existing `onDisconnected` callback, which resets `token`/`url` state (returning the UI to "Start call"), calls `onCallEnded()` to stop the worker process, and starts the usage polling loop.
+> - **Root cause analysis:** Three approaches were tried before this fix landed. (1) `RoomEvent.ParticipantDisconnected` + `remoteParticipants.size === 0` — failed because the room can have other remote participants (observer bridge, etc.) keeping the count above zero. (2) `agentState === "disconnected"` — failed because reading `useVoiceAssistant()` source revealed that `agentState` only returns `"disconnected"` when the **room** connection itself is in `ConnectionState.Disconnected`. When the agent participant leaves but the browser is still connected, `agentState` returns `"connecting"` (because `!agent` is `true`), never `"disconnected"`. (3) `agent === undefined` (current fix) — correct because `useVoiceAssistant().agent` is the RemoteParticipant object. It is `undefined` when no agent-kind participant is in the room. This is the precise signal that the agent left. The 3s delay handles brief WebSocket reconnection windows — if the agent reconnects before 3s, the cleanup return cancels the timer.
+> - **Verified by Playwright test:** `node /tmp/widget_test.mjs` — fake mic injects `bye_audio.wav`, agent reaches "Listening", audio stall causes agent session to close, `agent` becomes `undefined`, 3s timer fires `room.disconnect()`, `[BROWSER] disconnect from room` logged, "Start call" button reappears at `20.6s`.
+> - **Files:**
+>   - `src/components/PlaygroundClient.tsx` _(agentWasPresent ref added; useEffect on agent → disconnect after 3s when agent goes undefined; prior agentState/RoomEvent attempts removed; RoomEvent import removed)_
+
+---
+
+> ### Live API — end_call Tool Removed; Call Termination via Farewell Detection
+>
+> - **What changed:** The `end_call` tool was removed entirely from `voiceTools.ts`. `buildVoiceTools()` now accepts no parameters and returns `{}`. Call termination is handled by a new `isFarewell(text)` function that checks the agent's spoken text against a list of closing phrases (`"goodbye"`, `"good bye"`, `"bye bye"`, `"take care"`, `"talk soon"`, `"reach out"`, `"best of luck"`, `"all the best"`, `"have a great"`, `"good day"`, `"good night"`, `"until next time"`, `"speak soon"`, `"chat soon"`). The check runs inside the existing `conversation_item_added` handler in `genericEntry.ts` — when the agent's text matches, a 3-second `setTimeout` calls `ctx.room.disconnect()`. The `[CALL END RULES]` and `[SILENCE HANDLING]` addenda that instructed the agent to call `end_call` were removed from `buildLiveApiInstructions`. The `PLATFORM_VOICE_RULES` prompt block was updated to say "all data collection happens automatically after the call ends."
+> - **Why:** Even with a single tool registered, Gemini Live API can emit both a text response and a tool call in the same generation turn. When `end_call` was called alongside a farewell sentence, the SDK created two concurrent speech handles. Both completing near-simultaneously triggered two `rotateSegment` calls that raced — `"rotateSegment called while previous segment is still being rotated"` → `AgentActivity mainTask: exiting` → session closed with `reason: "user_initiated"`. The `session.interrupt()` fix inside `execute()` was also ineffective because the SDK creates speech handles before `execute` is ever called. Removing the tool entirely eliminates the race at source: the agent speaks a farewell phrase naturally, the transcript handler detects it, and the room disconnects after a short delay — no tool call, no competing speech handle.
+> - **Files:**
+>   - `src/lib/agents/voiceTools.ts` _(end_call removed; buildVoiceTools takes no params, returns {}; isFarewell() exported with phrase list)_
+>   - `src/lib/agents/genericEntry.ts` _(isFarewell imported; farewell check added in conversation_item_added for assistant turns; buildVoiceTools called with no args; session no longer passed to voiceTools)_
+>   - `src/lib/agents/promptBuilder.ts` _(PLATFORM_VOICE_RULES updated: tool-call language replaced with "all data collection happens automatically after the call ends")_
+>   - `src/lib/agents/sessionBuilder.ts` _(CALL END RULES and SILENCE HANDLING addenda removed from buildLiveApiInstructions)_
+
+---
+
+> ### Live API — generateReply Trigger Removed (Incompatible with Native Audio Models)
+>
+> - **What changed:** The `await session.generateReply({ userInput: "." })` call that previously fired immediately after `session.start()` was removed. A comment was added explaining why it must not be used for native audio models.
+> - **Why:** `generateReply` is explicitly incompatible with `gemini-live-2.5-flash-native-audio` and similar native audio models — the SDK logs a warning and rejects the call. However, Gemini still sends a server content event from its own internal logic, and because the framework has no active generation handle (it was never started via `generateReply`), the message is logged as `"received server content but no active generation"`. This leaves the session in a corrupted state: the next time the agent tries to speak (when the caller says something), the speech handle stalls for ~10 seconds before the watchdog recovers it. The native audio model greets naturally on the caller's first audio input, making the artificial trigger unnecessary.
+> - **Files:**
+>   - `src/lib/agents/genericEntry.ts` _(generateReply call removed after session.start(); explanatory comment added)_
+
+---
+
+> ### Playground — Widget Auto-Resets and Post-Call Processes Trigger When Agent Session Closes
+>
+> - **What changed:** `WebCallWidget` now registers a `RoomEvent.ParticipantDisconnected` listener on the LiveKit room. When any remote participant leaves and no remote participants remain (i.e., the agent worker has disconnected), it waits 1.5 seconds then calls `room.disconnect()` from the client side. This triggers the existing `onDisconnected` callback on `<LiveKitRoom>`, which resets `token`/`url` state (returning the UI to "Start call"), calls `onCallEnded()` to stop the worker process, and starts the usage polling loop that populates call cost in the UI. `RoomEvent` is imported from `livekit-client`.
+> - **Why:** When the server-side agent closes the session expectedly (via farewell detection calling `ctx.room.disconnect()`), it disconnects the **agent worker** from the room — the browser client remains connected because it is a separate participant. The `<LiveKitRoom onDisconnected>` callback only fires when the local client disconnects, so it never triggered on server-side agent exits. The call button stayed in "active" state indefinitely, post-call transcript and cost data never loaded, and the worker process was never signalled to stop. The participant disconnect listener closes the gap by making the client detect the agent's departure and self-disconnect.
+> - **Files:**
+>   - `src/components/PlaygroundClient.tsx` _(RoomEvent imported from livekit-client; useEffect with ParticipantDisconnected listener added to WebCallWidget; room.disconnect() called after 1.5s when no remote participants remain)_
+
+---
+
+### 🗄️ Data & Infrastructure
+
+---
+
+> ### Pricing — gemini-2.5-flash Added; Post-Call Extraction Cost Tracked and Folded into Total
+>
+> - **What changed:** Four related changes across the pricing and history pipeline: (1) `"gemini-2.5-flash"` added to `PROVIDER_RATES` at **$0.15/1M input, $0.60/1M output** for use as a cascading LLM. (2) A new `EXTRACTION_TEXT_RATES` table added alongside `PROVIDER_RATES` for models called via standard `generateContent` (not Live API audio mode); entry: `"gemini-2.5-flash": { inputPerMToken: 0.15, outputPerMToken: 0.6 }`. (3) `UsageData` extended with optional `extractionModel`, `extractionInputTokens`, `extractionOutputTokens`; `CostBreakdown` extended with `extraction: { inputCost, outputCost, total }`; `calculateCost` computes extraction cost via `lookupExtractionRates()` and folds it into `total` and `perMinute`. (4) `CallRecord` extended with `extractionInputTokens?: number` and `extractionOutputTokens?: number`; `callExtractor.ts` reads `result.response.usageMetadata.promptTokenCount` / `candidatesTokenCount` after each extraction run and persists them via `updateCallRecord`; `CallHistoryClient` passes these fields through `usageCost()` so the UI total includes the extraction cost.
+> - **Why:** Post-call extraction runs a separate LLM call on every completed call. Without tracking its token usage the call cost figures in the dashboard understate the true per-call spend. Capturing counts at extraction time and storing them on the call record attributes the cost to the correct call and surfaces it in call history without any retroactive lookup.
+> - **Files:**
+>   - `src/lib/pricing.ts` _(gemini-2.5-flash in PROVIDER_RATES; EXTRACTION_TEXT_RATES + lookupExtractionRates added; UsageData + CostBreakdown extended; calculateCost includes extraction cost)_
+>   - `src/lib/history.ts` _(extractionInputTokens + extractionOutputTokens added to CallRecord)_
+>   - `src/lib/agents/callExtractor.ts` _(token counts read from usageMetadata; updateCallRecord called with extraction token fields after writes complete)_
+>   - `src/components/CallHistoryClient.tsx` _(usageCost accepts optional record param for extraction fields; extractionModel + tokens passed to calculateCost)_
+
+---
+
+> ### Extraction Model — gemini-2.5-flash Chosen After ModelService.ListModels Verification
+>
+> - **What changed:** `EXTRACTION_MODEL` in `callExtractor.ts` set to `"gemini-2.5-flash"`. Verified by calling `GET /v1beta/models` against the project API key, which returned 54 models with their `supportedGenerationMethods`. Critical finding: `gemini-3.1-flash-live-preview` (a previous candidate) only exposes `bidiGenerateContent` — it does **not** support `generateContent`, so using it in `callExtractor.ts` would have thrown a runtime error on every post-call extraction. `gemini-2.5-flash` supports `generateContent` and costs less than `gemini-3.1-flash-lite` ($0.15/$0.60 vs $0.25/$1.50 per 1M tokens).
+> - **Why:** The extraction call uses the standard `@google/generative-ai` SDK's `model.generateContent()` path. Only models with `"generateContent"` in `supportedGenerationMethods` work on this path. Live API audio models (`*-live-preview`, `*-native-audio`) are `bidi`-only and will fail at runtime if passed to `getGenerativeModel`. Verifying via the live API avoided a silent production failure.
+> - **Files:**
+>   - `src/lib/agents/callExtractor.ts` _(EXTRACTION_MODEL = "gemini-2.5-flash")_
+
+---
+
 ## 🗓️ **2026-05-26**
 
 ---
 
 ### ✨ Features
+
+---
+
+> ### Live API — Unregistered Tool References in Prompt Logged as Warnings
+>
+> - **What changed:** After `buildVoiceTools()` returns, `runLiveApiSession` now scans the compiled system prompt for any snake*case identifiers that start with a recognised tool-verb prefix (`create*`, `update*`, `delete*`, `change*`, `schedule*`, `send*`, `end*`, `get*`, `set*`, `add*`, `remove*`, `list*`, `fetch*`, `book*`, `cancel*`, `search\_`). Any match that is **not** in the registered tools object emits a `warn`-level log: `[Pipeline] prompt references tool "X" which is not registered — it will be unavailable`. Common snake_case prose (`follow_up`, `iso_8601`, etc.) is excluded by the verb-prefix filter.
+> - **Why:** Operators frequently copy-paste system prompts from other agents or external sources that reference tools configured for a different agent. Gemini never receives those tools in the `tools` parameter so it can't call them, but without a warning there is no signal that the prompt is referring to capabilities that are silently absent. The log gives immediate visibility at session start so the mismatch can be corrected before the call goes live.
+> - **Files:**
+>   - `src/lib/agents/genericEntry.ts` _(post-tool-build scan: regex extracts snake_case verb-prefixed identifiers from baseInstructions; any not in registeredTools set emits a logger.warn per tool name)_
 
 ---
 
@@ -114,6 +280,15 @@
 ---
 
 ### 🐛 Bug Fixes
+
+---
+
+> ### Live API — Concurrent Tool Calls Serialised via Per-Session Promise Queue (Audio Pipeline Deadlock Fix)
+>
+> - **What changed:** All tool `execute` functions in `buildVoiceTools` are now routed through a per-session promise chain. After building the tools object normally, `buildVoiceTools` post-processes every entry: each `execute` is replaced with a wrapper that appends to a shared `toolQueue` promise and returns a chained promise. If two tools fire simultaneously, the second one is queued and only starts executing after the first resolves. A failed tool does not block the queue (`toolQueue = p.catch(() => {})` absorbs the rejection). A `[VoiceTools] queuing tool call` log line is emitted on each dispatch to make the ordering visible.
+> - **Why:** Gemini Live API can dispatch multiple function calls in a single generation turn. When this happened, the LiveKit SDK created two concurrent speech handles for the same turn. The `SegmentSynchronizerImpl` then deadlocked — `audio forwarding stalled waiting for TTS frames` was logged after an 18-second timeout, the agent entered `speaking → thinking` state, and no audio was ever produced again for the remainder of the call. The caller heard silence for up to 60+ seconds until they hung up. Serialising the tool executes means the SDK processes one tool response at a time, preventing the concurrent speech handle collision.
+> - **Files:**
+>   - `src/lib/agents/voiceTools.ts` _(tools built as named const; toolQueue promise chain + serial wrapper added at bottom; every tool's execute routed through the queue via Object.fromEntries post-processing)_
 
 ---
 

@@ -45,6 +45,11 @@ export const PROVIDER_RATES: Record<string, ProviderRates> = {
   },
 
   // ── Google Gemini (cascading LLM — text tokens only) ──────────────────────
+  "gemini-2.5-flash": {
+    llm: { inputPerMToken: 0.15, outputPerMToken: 0.6 },
+    stt: { perMinute: 0 },
+    tts: { perKChar: 0 },
+  },
   "gemini-2.0-flash": {
     llm: { inputPerMToken: 0.1, outputPerMToken: 0.4 },
     stt: { perMinute: 0 },
@@ -113,6 +118,24 @@ export const PROVIDER_RATES: Record<string, ProviderRates> = {
   },
 };
 
+// Rates for the post-call extraction model (text generateContent, not Live API).
+// gemini-2.5-flash: $0.15/1M input, $0.60/1M output (standard tier, verified 2026-06)
+const EXTRACTION_TEXT_RATES: Record<
+  string,
+  { inputPerMToken: number; outputPerMToken: number }
+> = {
+  "gemini-2.5-flash": { inputPerMToken: 0.15, outputPerMToken: 0.6 },
+};
+
+function lookupExtractionRates(model: string) {
+  const key = Object.keys(EXTRACTION_TEXT_RATES).find((k) =>
+    model.toLowerCase().includes(k.toLowerCase()),
+  );
+  return key
+    ? EXTRACTION_TEXT_RATES[key]
+    : { inputPerMToken: 0, outputPerMToken: 0 };
+}
+
 export interface UsageData {
   // LLM
   llmProvider: string;
@@ -130,12 +153,17 @@ export interface UsageData {
   ttsAudioMs: number;
   // Call
   callDurationMs: number;
+  // Post-call extraction (optional)
+  extractionModel?: string;
+  extractionInputTokens?: number;
+  extractionOutputTokens?: number;
 }
 
 export interface CostBreakdown {
   llm: { inputCost: number; outputCost: number; total: number };
   stt: { total: number };
   tts: { total: number };
+  extraction: { inputCost: number; outputCost: number; total: number };
   total: number;
   perMinute: number;
 }
@@ -165,7 +193,23 @@ export function calculateCost(usage: UsageData): CostBreakdown {
   const sttCost = (usage.sttAudioMs / 60_000) * sttRates.stt.perMinute;
   const ttsCost = (usage.ttsCharacters / 1_000) * ttsRates.tts.perKChar;
 
-  const total = inputCost + outputCost + sttCost + ttsCost;
+  const extractionRates = usage.extractionModel
+    ? lookupExtractionRates(usage.extractionModel)
+    : { inputPerMToken: 0, outputPerMToken: 0 };
+  const extractionInputCost =
+    ((usage.extractionInputTokens ?? 0) / 1_000_000) *
+    extractionRates.inputPerMToken;
+  const extractionOutputCost =
+    ((usage.extractionOutputTokens ?? 0) / 1_000_000) *
+    extractionRates.outputPerMToken;
+
+  const total =
+    inputCost +
+    outputCost +
+    sttCost +
+    ttsCost +
+    extractionInputCost +
+    extractionOutputCost;
   const durationMin = usage.callDurationMs / 60_000;
   const perMinute = durationMin > 0 ? total / durationMin : 0;
 
@@ -173,6 +217,11 @@ export function calculateCost(usage: UsageData): CostBreakdown {
     llm: { inputCost, outputCost, total: inputCost + outputCost },
     stt: { total: sttCost },
     tts: { total: ttsCost },
+    extraction: {
+      inputCost: extractionInputCost,
+      outputCost: extractionOutputCost,
+      total: extractionInputCost + extractionOutputCost,
+    },
     total,
     perMinute,
   };

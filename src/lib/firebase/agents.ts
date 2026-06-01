@@ -270,7 +270,12 @@ function mergeAgentData(
     },
     tools: doc.tools ?? [],
     migrationApplied: doc.migrationApplied,
-    updatedAt: doc.updatedAt?.toMillis(),
+    updatedAt:
+      typeof doc.updatedAt?.toMillis === "function"
+        ? (doc.updatedAt.toMillis() as number)
+        : typeof doc.updatedAt === "number"
+          ? doc.updatedAt
+          : undefined,
     updatedBy: doc.updatedBy,
     updatedByName: doc.updatedByName,
     userId: doc.userId,

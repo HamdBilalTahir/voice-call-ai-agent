@@ -44,6 +44,8 @@ export interface CallRecord {
   archived?: boolean;
   usage?: CallUsage;
   pipelineMode?: "cascading" | "live_api";
+  extractionInputTokens?: number;
+  extractionOutputTokens?: number;
 }
 
 function toFirestore(
