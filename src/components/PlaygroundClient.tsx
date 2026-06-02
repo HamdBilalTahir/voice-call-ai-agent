@@ -733,7 +733,6 @@ function PhoneTestPanel({
       const data = await res.json();
       setDialedNumber(fullNumber);
       setCallRoomName(data.roomName ?? "");
-      setLocalNumber("");
       setModalOpen(true);
     } catch {
       toast({

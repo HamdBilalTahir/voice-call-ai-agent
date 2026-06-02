@@ -30,7 +30,14 @@ const FAREWELL_PHRASES = [
   "chat soon",
 ];
 
+// Matches "bye" as a whole word so it catches "Bye!", "bye.", standalone "bye"
+// without false-positiving on substrings (none exist in English, but safer).
+const FAREWELL_WORD_RE = /\bbye\b/i;
+
 export function isFarewell(text: string): boolean {
   const lower = text.toLowerCase();
-  return FAREWELL_PHRASES.some((phrase) => lower.includes(phrase));
+  return (
+    FAREWELL_PHRASES.some((phrase) => lower.includes(phrase)) ||
+    FAREWELL_WORD_RE.test(text)
+  );
 }

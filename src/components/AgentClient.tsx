@@ -345,24 +345,41 @@ export function AgentClient({ agentData, agentKey }: AgentClientProps) {
     router.push(`?${p.toString()}`);
   };
 
+  // Poll active rooms every 5s (LiveKit lookup — cheap).
   useEffect(() => {
     let mounted = true;
     let tid: NodeJS.Timeout;
     const poll = async () => {
       if (!mounted) return;
       try {
-        const [activeRes, historyRes] = await Promise.all([
-          fetch(`/api/rooms/active?agent=${agentKey}`),
-          fetch(`/api/history?agent=${agentKey}`),
-        ]);
-        if (mounted) {
-          if (activeRes.ok) setActiveCalls(await activeRes.json());
-          if (historyRes.ok) setCallHistory(await historyRes.json());
-        }
+        const res = await fetch(`/api/rooms/active?agent=${agentKey}`);
+        if (mounted && res.ok) setActiveCalls(await res.json());
       } catch {
-        // non-critical polling error
+        // non-critical
       }
       if (mounted) tid = setTimeout(poll, 5000);
+    };
+    poll();
+    return () => {
+      mounted = false;
+      clearTimeout(tid);
+    };
+  }, [agentKey]);
+
+  // Poll call history every 60s — Firestore reads are quota-limited and
+  // history only changes when a call ends, so frequent polling is wasteful.
+  useEffect(() => {
+    let mounted = true;
+    let tid: NodeJS.Timeout;
+    const poll = async () => {
+      if (!mounted) return;
+      try {
+        const res = await fetch(`/api/history?agent=${agentKey}`);
+        if (mounted && res.ok) setCallHistory(await res.json());
+      } catch {
+        // non-critical
+      }
+      if (mounted) tid = setTimeout(poll, 60_000);
     };
     poll();
     return () => {

@@ -3,6 +3,7 @@ import fs from "fs";
 import path from "path";
 import { type JobContext, voice, defineAgent, log } from "@livekit/agents";
 import { RoomEvent } from "@livekit/rtc-node";
+import { RoomServiceClient } from "livekit-server-sdk";
 import {
   type AgentDefaults,
   type WorkerDispatchMeta,
@@ -49,29 +50,40 @@ function writeUsage(roomName: string, payload: object) {
   );
 }
 
-// ── SIP participant waiter ────────────────────────────────────────────────────
+// ── SIP call-answered waiter ──────────────────────────────────────────────────
 
-// Waits until the SIP phone participant joins the room (60-second timeout).
-// The participant appears in the room when the callee answers, or very shortly
-// after createSipParticipant is called — whichever comes first.
-function waitForSipParticipant(
+// Waits until the LiveKit SIP bridge sets sip.callStatus="active" on the phone
+// participant, which happens only when the callee picks up. TrackSubscribed fires
+// too early (during ringing) because the SIP bridge pre-subscribes the audio
+// track before the call is answered. 60-second timeout as a fallback.
+function waitForSipCallActive(
   ctx: JobContext,
   identity: string,
 ): Promise<void> {
   return new Promise((resolve) => {
-    if (ctx.room.remoteParticipants.has(identity)) {
+    const isActive = (p: any) => p?.attributes?.["sip.callStatus"] === "active";
+
+    const existing = ctx.room.remoteParticipants.get(identity);
+    if (existing && isActive(existing)) {
       resolve();
       return;
     }
+
     const timer = setTimeout(resolve, 60_000);
-    const handler = (p: any) => {
-      if (p.identity === identity) {
+    const handler = (
+      changedAttrs: Record<string, string>,
+      participant: any,
+    ) => {
+      if (
+        participant.identity === identity &&
+        changedAttrs["sip.callStatus"] === "active"
+      ) {
         clearTimeout(timer);
-        ctx.room.off(RoomEvent.ParticipantConnected, handler);
+        ctx.room.off(RoomEvent.ParticipantAttributesChanged, handler);
         resolve();
       }
     };
-    ctx.room.on(RoomEvent.ParticipantConnected, handler);
+    ctx.room.on(RoomEvent.ParticipantAttributesChanged, handler);
   });
 }
 
@@ -170,18 +182,34 @@ async function runLiveApiSession(
       console.log(`[Transcript] Agent: ${text}`);
       saveTurn({ speaker: "agent", text });
 
-      // Farewell detection — disconnect after agent speaks a closing phrase.
-      // Replaces the end_call tool which caused concurrent speech handle races.
+      // Farewell detection — close the LiveKit room after the agent speaks a
+      // closing phrase. deleteRoom() is used instead of ctx.room.disconnect()
+      // because disconnecting only removes the agent; the SIP participant
+      // (PSTN call) stays alive in the room. Deleting the room forces the SIP
+      // bridge to hang up the call and closes the observer modal.
       if (isFarewell(text)) {
         logger.info(
           { text },
-          "[Pipeline] farewell detected — scheduling disconnect",
+          "[Pipeline] farewell detected — scheduling room close",
         );
-        setTimeout(() => {
+        const roomName = ctx.room.name ?? "";
+        setTimeout(async () => {
+          if (!roomName) return;
           try {
-            ctx.room.disconnect();
+            const svc = new RoomServiceClient(
+              process.env.LIVEKIT_URL!,
+              process.env.LIVEKIT_API_KEY!,
+              process.env.LIVEKIT_API_SECRET!,
+            );
+            await svc.deleteRoom(roomName);
+            logger.info({ roomName }, "[Pipeline] room deleted — call ended");
           } catch {
-            /* already closing */
+            // Room may already be gone; fall back to agent disconnect
+            try {
+              ctx.room.disconnect();
+            } catch {
+              /* already closing */
+            }
           }
         }, 3000);
       }
@@ -211,22 +239,37 @@ async function runLiveApiSession(
     );
   });
 
-  // For SIP calls: wait until the phone participant joins the room before
-  // starting Gemini. The participant appears as soon as the SIP call is
-  // dispatched (often while still ringing), but audio only flows once the
-  // callee answers. inputOptions.participantIdentity routes the session to
-  // the correct participant and prevents the observer-* bridge participant
-  // from hijacking the session.
+  // For SIP calls: wait for sip.callStatus="active" before starting Gemini.
+  // The SIP bridge pre-subscribes the audio track during ringing, so TrackSubscribed
+  // fires too early. The "active" attribute is set only when the callee answers.
   if (meta.sipParticipantIdentity) {
     logger.info(
       { participant: meta.sipParticipantIdentity },
-      "[Live] waiting for SIP participant",
+      "[Live] waiting for SIP call active (callee answer)",
     );
-    await waitForSipParticipant(ctx, meta.sipParticipantIdentity);
+    await waitForSipCallActive(ctx, meta.sipParticipantIdentity);
     logger.info(
       { participant: meta.sipParticipantIdentity },
-      "[Live] SIP participant joined, starting session",
+      "[Live] SIP call active, starting session",
     );
+
+    // When the callee hangs up the SIP participant disconnects — close the room
+    // so the observer modal transitions to summary instead of staying "Connected".
+    ctx.room.on(RoomEvent.ParticipantDisconnected, (p: any) => {
+      if (p.identity === meta.sipParticipantIdentity) {
+        logger.info(
+          { identity: p.identity },
+          "[Live] SIP participant disconnected — closing room",
+        );
+        setTimeout(() => {
+          try {
+            ctx.room.disconnect();
+          } catch {
+            /* already closing */
+          }
+        }, 1000);
+      }
+    });
   }
 
   const callStartMs = Date.now();

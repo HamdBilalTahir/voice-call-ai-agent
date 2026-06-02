@@ -91,6 +91,42 @@
 
 ---
 
+> ### Phone Call — Greeting Now Plays After Callee Answers (SIP Active Status Fix)
+>
+> - **What changed:** `waitForSipAudio` (which waited for `TrackSubscribed`) was replaced with `waitForSipCallActive`, which waits for the LiveKit SIP participant's `sip.callStatus` attribute to become `"active"` via `RoomEvent.ParticipantAttributesChanged`. The 60-second timeout fallback is retained.
+> - **Why:** The SIP bridge pre-subscribes its audio track when it joins the LiveKit room — during the ringing phase, before the callee has answered. `TrackSubscribed` fired immediately (2ms after the check) even while the phone was still ringing, causing the agent to start the session and speak the greeting into dead air. `sip.callStatus = "active"` is only set by LiveKit when the PSTN call is actually answered, making it the correct signal to wait for.
+> - **Files:**
+>   - `src/lib/agents/genericEntry.ts` _(waitForSipAudio → waitForSipCallActive; uses RoomEvent.ParticipantAttributesChanged + sip.callStatus check)_
+
+---
+
+> ### Phone Call — Farewell Now Hangs Up the PSTN Call (Room Delete Fix)
+>
+> - **What changed:** The farewell detection handler in `runLiveApiSession` now calls `RoomServiceClient.deleteRoom(roomName)` (from `livekit-server-sdk`) instead of `ctx.room.disconnect()`.
+> - **Why:** `ctx.room.disconnect()` only disconnects the agent participant from the LiveKit room. The SIP participant (representing the live PSTN call) remains in the room, keeping the phone call alive indefinitely — the caller had to hang up manually, and the observer modal stayed "Connected". Deleting the entire room forces the SIP bridge to hang up the call and closes all participants, which transitions the UI to the summary state.
+> - **Files:**
+>   - `src/lib/agents/genericEntry.ts` _(farewell handler: RoomServiceClient imported; deleteRoom(roomName) with ctx.room.disconnect() fallback; 3s delay retained)_
+
+---
+
+> ### Playground — Phone Number Preserved After Calling
+>
+> - **What changed:** `setLocalNumber("")` was removed from the `handleCall` success path in the outbound call panel.
+> - **Why:** Clearing the number after a call was intentional (to reset the form), but the number was already persisted to `localStorage` on every keystroke. After a call, the input went blank — which felt like the persistence wasn't working — even though reloading the page would restore it. Keeping the number visible after calling makes the behaviour consistent with what's stored.
+> - **Files:**
+>   - `src/components/PlaygroundClient.tsx` _(handleCall: removed setLocalNumber("") on success)_
+
+---
+
+> ### Agent Page — Firestore Quota Exhaustion from History Over-Polling Fixed
+>
+> - **What changed:** The single polling loop that fetched both `/api/rooms/active` and `/api/history` every 5 seconds was split into two independent loops: rooms/active every 5 seconds, history every 60 seconds.
+> - **Why:** Both endpoints were coupled in a `Promise.all` on a 5-second interval. The rooms/active check is a LiveKit API call (cheap), but the history endpoint queries Firestore for up to 50 documents per call. At 12 requests/minute × 50 docs = 600 Firestore reads/minute per open tab, the free tier's 50k daily read quota was exhausted within ~2 hours of testing. Call history only changes when a call ends, so frequent polling provided no benefit.
+> - **Files:**
+>   - `src/components/AgentClient.tsx` _(useEffect polling: split into two separate effects; rooms/active 5s, history 60s)_
+
+---
+
 > ### Login — Agent Sidebar Empty After Sign-In (Hard Redirect Fix)
 >
 > - **What changed:** After a successful login, the redirect now uses `window.location.href = "/"` instead of `router.replace("/")`. The sign-out path in `AuthContext` retains `router.replace("/login")`.

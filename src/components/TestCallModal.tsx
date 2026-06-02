@@ -10,6 +10,7 @@ import {
   UserPlus,
   ChevronDown,
   Check,
+  Copy,
   Share2,
   Flag,
   Smile,
@@ -584,6 +585,15 @@ export function TestCallModal({
   const [mobileTxTab, setMobileTxTab] = useState<"original" | "translation">(
     "original",
   );
+  const [copiedOriginal, setCopiedOriginal] = useState(false);
+
+  const copyOriginalTranscript = () => {
+    const text = transcriptToText(transcript);
+    navigator.clipboard.writeText(text).then(() => {
+      setCopiedOriginal(true);
+      setTimeout(() => setCopiedOriginal(false), 2000);
+    });
+  };
 
   return (
     <Dialog
@@ -715,10 +725,25 @@ export function TestCallModal({
               <>
                 {/* Desktop column headers — hidden on mobile */}
                 <div className="hidden sm:grid grid-cols-2 border-b border-border shrink-0">
-                  <div className="px-5 py-2 border-r border-border">
+                  <div className="px-5 py-2 border-r border-border flex items-center justify-between">
                     <span className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
                       Original
                     </span>
+                    <button
+                      onClick={copyOriginalTranscript}
+                      disabled={
+                        transcript.filter((l) => l.isFinal && l.text.trim())
+                          .length === 0
+                      }
+                      title="Copy transcript"
+                      className="flex items-center gap-1 text-[11px] text-muted-foreground hover:text-foreground transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
+                    >
+                      {copiedOriginal ? (
+                        <Check className="size-3.5 text-success" />
+                      ) : (
+                        <Copy className="size-3.5" />
+                      )}
+                    </button>
                   </div>
                   <div className="px-5 py-2 flex items-center justify-between">
                     <span className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
