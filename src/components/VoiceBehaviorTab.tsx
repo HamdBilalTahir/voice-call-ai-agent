@@ -104,6 +104,27 @@ const STT_LANGUAGE_OPTIONS = [
   { value: "ar", label: "Arabic" },
 ];
 
+const LIVE_API_LANGUAGES = [
+  { value: "", label: "Default (auto)" },
+  { value: "en-US", label: "English — US (en-US)" },
+  { value: "en-GB", label: "English — UK (en-GB)" },
+  { value: "en-AU", label: "English — Australian (en-AU)" },
+  { value: "en-IN", label: "English — South Asian / Pakistani (en-IN)" },
+  { value: "ar-XA", label: "Arabic (ar-XA)" },
+  { value: "de-DE", label: "German (de-DE)" },
+  { value: "es-ES", label: "Spanish (es-ES)" },
+  { value: "fr-FR", label: "French (fr-FR)" },
+  { value: "hi-IN", label: "Hindi (hi-IN)" },
+  { value: "it-IT", label: "Italian (it-IT)" },
+  { value: "ja-JP", label: "Japanese (ja-JP)" },
+  { value: "ko-KR", label: "Korean (ko-KR)" },
+  { value: "pt-BR", label: "Portuguese — Brazilian (pt-BR)" },
+  { value: "ru-RU", label: "Russian (ru-RU)" },
+  { value: "tr-TR", label: "Turkish (tr-TR)" },
+  { value: "ur-PK", label: "Urdu (ur-PK)" },
+  { value: "zh-CN", label: "Chinese — Mandarin (zh-CN)" },
+];
+
 const LIVE_API_MODELS = [
   {
     value: "gemini-3.1-flash-live-preview",
@@ -150,6 +171,7 @@ interface FormState {
   useLiveApi: boolean;
   liveApiModel: string;
   liveApiVoice: string;
+  liveApiLanguage: string;
   liveApiConfigId: string;
 }
 
@@ -572,6 +594,7 @@ export function VoiceBehaviorTab({
       useLiveApi: vs?.useLiveApi ?? false,
       liveApiModel: vs?.liveApiModel ?? "gemini-live-2.5-flash-native-audio",
       liveApiVoice: vs?.liveApiVoice ?? "Puck",
+      liveApiLanguage: vs?.liveApiLanguage ?? "",
       liveApiConfigId: vs?.liveApiConfigId ?? "",
     };
   };
@@ -593,6 +616,7 @@ export function VoiceBehaviorTab({
     useLiveApi: false,
     liveApiModel: "gemini-2.0-flash-exp",
     liveApiVoice: "Puck",
+    liveApiLanguage: "",
     liveApiConfigId: "",
   };
 
@@ -745,6 +769,7 @@ export function VoiceBehaviorTab({
       useLiveApi: form.useLiveApi,
       liveApiModel: form.liveApiModel || undefined,
       liveApiVoice: form.liveApiVoice || undefined,
+      liveApiLanguage: form.liveApiLanguage || undefined,
       liveApiConfigId: form.liveApiConfigId || undefined,
     };
 
@@ -972,6 +997,16 @@ export function VoiceBehaviorTab({
                       </span>
                     )}
                   </button>
+                </FieldRow>
+                <FieldRow
+                  label="Language / Accent"
+                  helper="Affects accent and dialect. Use 'en-IN' for a South Asian / Pakistani accent."
+                >
+                  <SelectField
+                    value={form.liveApiLanguage}
+                    onChange={(v) => set("liveApiLanguage", v)}
+                    options={LIVE_API_LANGUAGES}
+                  />
                 </FieldRow>
               </div>
               <FieldRow

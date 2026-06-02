@@ -811,7 +811,13 @@ function CallSlideOver({
 
 // ── CallHistoryClient ─────────────────────────────────────────────────────────
 
-export function CallHistoryClient({ agents }: { agents: AgentConfig[] }) {
+export function CallHistoryClient({
+  agents,
+  userAgentKeys: userAgentKeysProp,
+}: {
+  agents: AgentConfig[];
+  userAgentKeys?: string[];
+}) {
   const [records, setRecords] = useState<CallRecord[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -838,9 +844,25 @@ export function CallHistoryClient({ agents }: { agents: AgentConfig[] }) {
     setSavedViews(loadSavedViews());
   }, []);
 
+  const userAgentKeys = useMemo(
+    () =>
+      userAgentKeysProp
+        ? new Set(userAgentKeysProp)
+        : new Set(agents.map((a) => a.key)),
+    [userAgentKeysProp, agents],
+  );
+
+  const userRecords = useMemo(
+    () =>
+      userAgentKeys.size === 0
+        ? records
+        : records.filter((r) => !r.agentKey || userAgentKeys.has(r.agentKey)),
+    [records, userAgentKeys],
+  );
+
   const filtered = useMemo(
-    () => applyFilters(records, filters, agents),
-    [records, filters, agents],
+    () => applyFilters(userRecords, filters, agents),
+    [userRecords, filters, agents],
   );
 
   const sorted = useMemo(() => {
@@ -1035,9 +1057,9 @@ export function CallHistoryClient({ agents }: { agents: AgentConfig[] }) {
             Call History
           </h1>
           <p className="text-sm text-muted-foreground mt-1">
-            {sorted.length !== records.length
-              ? `${sorted.length} of ${records.length} call${records.length !== 1 ? "s" : ""}`
-              : `${records.length} call${records.length !== 1 ? "s" : ""}`}
+            {sorted.length !== userRecords.length
+              ? `${sorted.length} of ${userRecords.length} call${userRecords.length !== 1 ? "s" : ""}`
+              : `${userRecords.length} call${userRecords.length !== 1 ? "s" : ""}`}
           </p>
         </div>
         <button
@@ -1163,11 +1185,13 @@ export function CallHistoryClient({ agents }: { agents: AgentConfig[] }) {
             className={SELECT_CLS}
           >
             <option value="">All agents</option>
-            {agents.map((a) => (
-              <option key={a.key} value={a.key}>
-                {a.name}
-              </option>
-            ))}
+            {agents
+              .filter((a) => userAgentKeys.has(a.key))
+              .map((a) => (
+                <option key={a.key} value={a.key}>
+                  {a.name}
+                </option>
+              ))}
           </select>
 
           <select
@@ -1359,8 +1383,8 @@ export function CallHistoryClient({ agents }: { agents: AgentConfig[] }) {
                         className="rounded border-border accent-primary cursor-pointer"
                       />
                     </th>
-                    <SortTh col="startTime" label="Time" />
                     <SortTh col="agentKey" label="Agent" />
+                    <SortTh col="startTime" label="Time" />
                     <SortTh col="phoneNumber" label="Caller / Recipient" />
                     <th className={thCls}>Dir</th>
                     <SortTh col="duration" label="Duration" />
@@ -1411,6 +1435,13 @@ export function CallHistoryClient({ agents }: { agents: AgentConfig[] }) {
                           />
                         </td>
 
+                        {/* Agent */}
+                        <td className="px-3 py-3">
+                          <p className="text-xs text-foreground whitespace-nowrap">
+                            {agent?.name ?? record.agentKey}
+                          </p>
+                        </td>
+
                         {/* Time */}
                         <td className="px-3 py-3">
                           <p className="text-xs font-medium text-foreground">
@@ -1418,13 +1449,6 @@ export function CallHistoryClient({ agents }: { agents: AgentConfig[] }) {
                           </p>
                           <p className="text-[10px] text-muted-foreground mt-0.5">
                             {formatTime(record.startTime)}
-                          </p>
-                        </td>
-
-                        {/* Agent */}
-                        <td className="px-3 py-3">
-                          <p className="text-xs text-foreground whitespace-nowrap">
-                            {agent?.name ?? record.agentKey}
                           </p>
                         </td>
 

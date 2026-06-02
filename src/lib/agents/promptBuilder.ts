@@ -20,6 +20,7 @@ export interface DispatchMetadata {
   useLiveApi: boolean;
   liveApiModel?: string;
   liveApiVoice?: string;
+  liveApiLanguage?: string;
   liveApiKey?: string;
   // SIP participant identity — tells the session which participant to track
   // (ignores the observer/control participants the SIP bridge adds first)
@@ -49,7 +50,10 @@ export function buildDispatchMetadata(
 
   const meta: DispatchMetadata = {
     ...extra,
-    systemPrompt: buildSystemPrompt(agentData),
+    systemPrompt: buildSystemPrompt({
+      ...agentData,
+      liveApiLanguage: vs?.liveApiLanguage,
+    }),
     useLiveApi,
   };
 
@@ -65,6 +69,7 @@ export function buildDispatchMetadata(
     // Live API handles STT + TTS natively — only pass model/voice/key
     if (vs?.liveApiModel) meta.liveApiModel = vs.liveApiModel;
     if (vs?.liveApiVoice) meta.liveApiVoice = vs.liveApiVoice;
+    if (vs?.liveApiLanguage) meta.liveApiLanguage = vs.liveApiLanguage;
     if (resolvedKeys.liveApiKey) meta.liveApiKey = resolvedKeys.liveApiKey;
   } else {
     // Cascading pipeline: STT → LLM → TTS
@@ -84,23 +89,80 @@ export function buildDispatchMetadata(
   return JSON.stringify(meta);
 }
 
-export const PLATFORM_VOICE_RULES =
-  'You are speaking to the user over a voice call. Keep your responses short and conversational. DO NOT use markdown, bullet points, or special characters. Use natural filler phrases like "umm" or "let me think" sparingly. If the user interrupts you, stop talking and listen gracefully. Focus on having a natural conversation — all data collection happens automatically after the call ends.';
+export const PLATFORM_VOICE_RULES = `You are speaking with someone over a live voice call. Keep responses short and conversational — one or two sentences at a time unless more detail is genuinely needed.
+
+[VOICE AND SPEECH RULES]
+- Always use contractions: don't, I'm, you're, can't, we'll, that's.
+- Use natural fillers sparingly: "umm", "uh", "let me think", "right", "yeah", "I see", "got it", "sure".
+- Open sentences naturally: "So,", "Actually,", "Look,", "Here's the thing —", "Right, so —".
+- Self-correct occasionally when it sounds natural: "I mean —", "wait, actually —", "sorry, let me rephrase that".
+- Mirror the caller's energy — match their enthusiasm when they're excited, slow down and stay calm when they're concerned or upset.
+- Vary your pacing — pause briefly after a question, don't rush through information.
+- NEVER use markdown, bullet points, numbered lists, headers, or special characters.
+- If the caller interrupts, stop immediately and listen — do not finish your sentence.
+- Focus on the conversation — all data collection happens automatically after the call ends.`;
+
+/**
+ * Per-locale system-prompt instruction injected at the top of the compiled prompt
+ * when liveApiLanguage is set. Each entry is hand-crafted for the specific script,
+ * orthography, and common model failure modes of that locale.
+ * English variants (en-*) are absent — no override needed.
+ */
+export const LOCALE_LANGUAGE_INSTRUCTION: Record<string, string> = {
+  "ar-XA":
+    "You MUST respond ONLY in Arabic for this entire call. Write in Arabic script (right-to-left). Do not transliterate into Latin characters. Do not switch to English even if the caller speaks English to you.",
+  "de-DE":
+    "You MUST respond ONLY in German for this entire call. Use formal Sie unless the caller explicitly switches to du. Do not switch to English even if the caller speaks English to you.",
+  "es-ES":
+    "You MUST respond ONLY in Spanish for this entire call. Use Latin American Spanish conventions if the caller's accent suggests it. Do not switch to English even if the caller speaks English to you.",
+  "fr-FR":
+    "You MUST respond ONLY in French for this entire call. Use formal vous unless the caller explicitly switches to tu. Do not switch to English even if the caller speaks English to you.",
+  "hi-IN":
+    "You MUST respond ONLY in Hindi for this entire call. Write in Devanagari script. Do not transliterate into Latin characters. Do not switch to English even if the caller speaks English to you.",
+  "it-IT":
+    "You MUST respond ONLY in Italian for this entire call. Do not switch to English even if the caller speaks English to you.",
+  "ja-JP":
+    "You MUST respond ONLY in Japanese for this entire call. Write in standard Japanese script (Hiragana, Katakana, and Kanji as appropriate). Use polite keigo (敬語) register. Do not switch to English even if the caller speaks English to you.",
+  "ko-KR":
+    "You MUST respond ONLY in Korean for this entire call. Write in Hangul script. Use formal jondaemal (존댓말) register. Do not switch to English even if the caller speaks English to you.",
+  "pt-BR":
+    "You MUST respond ONLY in Brazilian Portuguese for this entire call. Do not switch to English even if the caller speaks English to you.",
+  "ru-RU":
+    "You MUST respond ONLY in Russian for this entire call. Write in Cyrillic script. Do not transliterate into Latin characters. Do not switch to English even if the caller speaks English to you.",
+  "tr-TR":
+    "You MUST respond ONLY in Turkish for this entire call. Do not switch to English even if the caller speaks English to you.",
+  "ur-PK":
+    "You MUST respond ONLY in Urdu for this entire call. Always write using Urdu/Arabic script (نستعلیق — right-to-left). Do NOT use Devanagari (Hindi) script under any circumstances. Do not transliterate into Latin characters. Do not switch to English even if the caller speaks English to you.",
+  "zh-CN":
+    "You MUST respond ONLY in Mandarin Chinese for this entire call. Write in Simplified Chinese characters (简体字). Do not use Traditional characters or Pinyin romanisation. Do not switch to English even if the caller speaks English to you.",
+};
 
 export interface PromptFields {
   roleAndResponsibilities?: string;
   personaLanguageAndTone?: string;
   mistakesToAvoid?: string;
   additionalInstructions?: string;
+  liveApiLanguage?: string;
 }
 
 /**
  * Assembles the final LLM system prompt from the platform voice rules (constant)
  * and the four user-editable instruction sections. Sections are prepended with
  * bracketed headers and omitted entirely when empty.
+ *
+ * When liveApiLanguage maps to a non-English locale, a [LANGUAGE] block is
+ * prepended so the model responds in the correct language without the user
+ * needing to write that instruction themselves.
  */
 export function buildSystemPrompt(fields: PromptFields): string {
-  const parts: string[] = [PLATFORM_VOICE_RULES];
+  const languageInstruction = fields.liveApiLanguage
+    ? LOCALE_LANGUAGE_INSTRUCTION[fields.liveApiLanguage]
+    : undefined;
+
+  const parts: string[] = [
+    languageInstruction ? `[LANGUAGE]: ${languageInstruction}` : "",
+    PLATFORM_VOICE_RULES,
+  ].filter(Boolean);
 
   if (fields.roleAndResponsibilities?.trim()) {
     parts.push(

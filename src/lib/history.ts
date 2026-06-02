@@ -58,9 +58,37 @@ function toFirestore(
 
 const col = () => getDb().collection(COLLECTION);
 
-export async function getCallHistory(): Promise<CallRecord[]> {
-  const snap = await col().orderBy("startTime", "desc").limit(1000).get();
-  return snap.docs.map((d) => ({ id: d.id, ...d.data() }) as CallRecord);
+export async function getCallHistory(
+  agentKeys?: string[],
+): Promise<CallRecord[]> {
+  // No agentKeys arg → unfiltered (admin/internal use)
+  if (agentKeys === undefined) {
+    const snap = await col().orderBy("startTime", "desc").limit(1000).get();
+    return snap.docs.map((d) => ({ id: d.id, ...d.data() }) as CallRecord);
+  }
+  // Empty allow-list → user has no agents, return nothing
+  if (agentKeys.length === 0) return [];
+
+  // Firestore "in" supports at most 30 values per query — chunk if needed
+  const chunks: string[][] = [];
+  for (let i = 0; i < agentKeys.length; i += 30) {
+    chunks.push(agentKeys.slice(i, i + 30));
+  }
+
+  const snaps = await Promise.all(
+    chunks.map((chunk) =>
+      col()
+        .where("agentKey", "in", chunk)
+        .orderBy("startTime", "desc")
+        .limit(500)
+        .get(),
+    ),
+  );
+
+  const records = snaps.flatMap((snap) =>
+    snap.docs.map((d) => ({ id: d.id, ...d.data() }) as CallRecord),
+  );
+  return records.sort((a, b) => b.startTime - a.startTime).slice(0, 1000);
 }
 
 // Lookup by roomName field (used by webhook handlers).

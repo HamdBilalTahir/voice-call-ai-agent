@@ -40,10 +40,11 @@ export default function LoginPage() {
   const [needsEmailConfirm, setNeedsEmailConfirm] = useState(false);
   const [confirmEmail, setConfirmEmail] = useState("");
 
-  // Already signed in — send straight to dashboard
+  // Already signed in — hard redirect so the server re-renders the layout
+  // with the new __uid cookie (soft nav reuses the cached layout and misses it).
   useEffect(() => {
     if (!authLoading && user) {
-      router.replace("/");
+      window.location.href = "/";
     }
   }, [user, authLoading, router]);
 

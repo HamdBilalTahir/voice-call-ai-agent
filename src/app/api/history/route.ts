@@ -1,18 +1,29 @@
 import { NextRequest, NextResponse } from "next/server";
+import { cookies } from "next/headers";
 import {
   getCallHistory,
   getAgentCallHistory,
   updateCallRecordById,
 } from "@/lib/history";
+import { listAgents } from "@/lib/firebase/agents";
 
 export async function GET(request: NextRequest) {
   try {
     const { searchParams } = new URL(request.url);
     const agent = searchParams.get("agent");
 
-    const history = agent
-      ? await getAgentCallHistory(agent)
-      : (await getCallHistory()).filter((r) => !r.archived).slice(0, 500);
+    if (agent) {
+      const history = await getAgentCallHistory(agent);
+      return NextResponse.json(history);
+    }
+
+    const uid = (await cookies()).get("__uid")?.value;
+    const userAgents = await listAgents(uid);
+    const agentKeys = userAgents.map((a) => a.key);
+
+    const history = (await getCallHistory(agentKeys))
+      .filter((r) => !r.archived)
+      .slice(0, 500);
 
     return NextResponse.json(history);
   } catch (error) {

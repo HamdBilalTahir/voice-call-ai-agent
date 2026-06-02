@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { cookies } from "next/headers";
 import { getCallHistory, CallRecord } from "@/lib/history";
 import { listAgents } from "@/lib/firebase/agents";
 
@@ -51,7 +52,10 @@ export interface DashboardResponse {
 }
 
 export async function GET() {
-  const all = await getCallHistory();
+  const uid = (await cookies()).get("__uid")?.value;
+  const userAgents = await listAgents(uid);
+  const agentKeys = userAgents.map((a) => a.key);
+  const all = await getCallHistory(agentKeys);
   const now = Date.now();
 
   const today = all.filter((r) => r.startTime >= now - DAY_MS);
@@ -93,11 +97,9 @@ export async function GET() {
     .sort((a, b) => b.startTime - a.startTime)
     .slice(0, 5);
 
-  const agentList = await listAgents();
-
   return NextResponse.json({
     stats,
     recentCalls,
-    agents: agentList,
-  } satisfies DashboardResponse & { agents: typeof agentList });
+    agents: userAgents,
+  } satisfies DashboardResponse & { agents: typeof userAgents });
 }

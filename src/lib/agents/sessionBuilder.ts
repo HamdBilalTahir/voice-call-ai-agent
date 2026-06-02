@@ -40,6 +40,7 @@ export interface WorkerDispatchMeta {
   liveApiModel?: string;
   liveApiVoice?: string;
   liveApiKey?: string;
+  liveApiLanguage?: string;
   // SIP call participant identity — routes the session to the right participant
   sipParticipantIdentity?: string;
 }
@@ -66,6 +67,9 @@ function buildSTT(model: string, language: string, apiKey?: string) {
  *  2. Not speaking function call syntax — if the prompt references tools like
  *     create_custom_task() and no functions are registered with the session,
  *     the model outputs the raw call as speech.
+ *
+ * Note: language response enforcement is handled upstream in buildSystemPrompt
+ * so it appears in the compiled-prompt preview and applies to all pipelines.
  */
 export function buildLiveApiInstructions(
   baseInstructions: string,
@@ -98,6 +102,10 @@ export function buildSession(
       voice: meta.liveApiVoice ?? "Puck",
       apiKey: meta.liveApiKey ?? process.env.GEMINI_API_KEY,
       instructions: buildLiveApiInstructions(baseInstructions, greeting),
+      ...(meta.liveApiLanguage ? { language: meta.liveApiLanguage } : {}),
+      // Enables user-audio transcription locked to the session language so the
+      // caller transcript uses the correct script (e.g. Urdu not Devanagari).
+      inputAudioTranscription: {},
     });
     return new voice.AgentSession({ llm: realtimeModel });
   }

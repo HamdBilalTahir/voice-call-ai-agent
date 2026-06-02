@@ -101,7 +101,7 @@ function TrendChip({
   if (value === null) {
     return (
       <span className="text-xs text-muted-foreground flex items-center gap-0.5">
-        <Minus className="size-3" /> No data
+        <Minus className="size-3" /> No prior day
       </span>
     );
   }

@@ -24,6 +24,7 @@ export async function GET(_req: NextRequest, { params }: { params: Params }) {
       personaLanguageAndTone: agent.personaLanguageAndTone,
       mistakesToAvoid: agent.mistakesToAvoid,
       additionalInstructions: agent.additionalInstructions,
+      liveApiLanguage: agent.voiceSettings?.liveApiLanguage,
     });
 
     return new Response(prompt, {

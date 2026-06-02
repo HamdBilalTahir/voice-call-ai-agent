@@ -1,3 +1,114 @@
+## 🗓️ **2026-06-02**
+
+---
+
+### ✨ Features
+
+---
+
+> ### Sarah Agent — Speaking Character Block Added to Persona
+>
+> - **What changed:** A "Speaking Character" section was prepended to Sarah's `personaLanguageAndTone` field in Firestore. It defines her character (warm, attentive, professional without being stiff), her natural vocabulary ("absolutely", "of course", "happy to help", "let me just check that"), natural connectors ("you know", "actually", "look"), and corporate filler to avoid ("certainly", "indeed", "I apologize for any inconvenience"). Her existing intent framework, education tone calibration, pacing rules, and response structure are untouched.
+> - **Why:** The improved `PLATFORM_VOICE_RULES` baseline handles mechanics (contractions, mirroring, pacing). The persona layer handles character and word-choice — the two are cleanly separated so they don't contradict each other.
+> - **Files:**
+>   - Firestore: `agents/gZpvYpAgmk9WShjXqF8G` _(personaLanguageAndTone: Speaking Character block prepended)_
+
+---
+
+> ### Platform Voice Rules — Human Speech Defaults Improved
+>
+> - **What changed:** `PLATFORM_VOICE_RULES` in `promptBuilder.ts` expanded from a single sentence into a structured `[VOICE AND SPEECH RULES]` block that covers: always-on contractions, natural filler words and acknowledgments (`umm`, `uh`, `yeah`, `right`, `I see`, `got it`), natural sentence openers (`So,`, `Actually,`, `Look,`, `Here's the thing —`), occasional self-correction (`I mean —`, `wait, actually —`), energy mirroring to the caller's mood, natural pacing with pauses after questions, and hard-stop on interruption.
+> - **Why:** The previous rule block only mentioned "natural filler phrases like umm or let me think sparingly". Without explicit guidance, the model defaults to robotic, over-formal speech. The expanded ruleset gives every agent a human-feeling baseline that persona instructions can then layer on top of.
+> - **Files:**
+>   - `src/lib/agents/promptBuilder.ts` _(PLATFORM_VOICE_RULES: single-sentence → structured [VOICE AND SPEECH RULES] block)_
+
+---
+
+> ### Gemini Live API — Caller Transcript Locked to Session Language Script
+>
+> - **What changed:** `inputAudioTranscription: {}` is now passed to `RealtimeModel` so Gemini uses the session's `language` BCP-47 code when transcribing the caller's audio. Previously `user_input_transcribed` events came back in whatever script Gemini auto-detected (Roman Urdu in Latin, Hindi in Devanagari, Urdu in Urdu script — mixed per utterance). With `inputAudioTranscription` enabled alongside `language: "ur-PK"`, Urdu speech is consistently transcribed in Urdu/Arabic script.
+> - **Why:** `AudioTranscriptionConfig` in the Google SDK is an empty interface with no explicit language/script option. However enabling the field (even as `{}`) signals to the Gemini API to use the session `speechConfig.languageCode` for transcription output. Note: Hindi speech (a different language from Urdu) still transcribes in Devanagari — cross-language normalization would require post-call LLM processing.
+> - **Files:**
+>   - `src/lib/agents/sessionBuilder.ts` _(RealtimeModel constructor: inputAudioTranscription: {})_
+
+---
+
+> ### Language / Accent Dropdown — BCP-47 Codes Now Shown in Labels
+>
+> - **What changed:** Each option in the Language / Accent dropdown now includes the BCP-47 locale code in parentheses — e.g. `English — South Asian / Pakistani (en-IN)`, `Urdu (ur-PK)`, `Arabic (ar-XA)`.
+> - **Why:** Without the code visible, it wasn't obvious which locale was being set — particularly for non-obvious codes like `ar-XA` (Arabic) or `en-IN` (South Asian accent). Showing the code lets operators cross-reference Gemini docs without leaving the UI.
+> - **Files:**
+>   - `src/components/VoiceBehaviorTab.tsx` _(LIVE_API_LANGUAGES: code appended to each label in parentheses)_
+
+---
+
+> ### Gemini Live API — Per-Locale Language Instructions in Compiled System Prompt
+>
+> - **What changed:** When `liveApiLanguage` is set to a non-English BCP-47 locale, a tailored `[LANGUAGE]` instruction block is automatically prepended to the compiled system prompt — no manual prompt writing needed. The block is injected in `buildSystemPrompt`, so it (a) appears in the compiled-prompt preview in the UI and (b) applies to all pipeline types (Live API and cascading). Each locale has a hand-crafted instruction string in the `LOCALE_LANGUAGE_INSTRUCTION` map covering language, script, register, and common model failure modes. Examples: `ur-PK` explicitly forbids Devanagari and specifies right-to-left Urdu script; `ja-JP` specifies keigo register; `de-DE` specifies formal Sie; `zh-CN` specifies Simplified characters and forbids Pinyin. English variants (`en-*`) receive no instruction — the model's default is English.
+> - **Why:** A generic `"respond only in X"` template is insufficient across all languages. Three discovered failure modes: (1) the `language` param on `RealtimeModel` only steers TTS accent, not LLM output language — without a prompt instruction the agent speaks English regardless of locale; (2) setting `ur-PK` caused the agent to respond in Urdu phonetics but write in Devanagari (Hindi script) because Urdu and Hindi share spoken roots; (3) some languages require register/formality guidance the model won't default to correctly. A per-locale map lets each language have exactly the right instruction without template workarounds.
+> - **Files:**
+>   - `src/lib/agents/promptBuilder.ts` _(LOCALE_LANGUAGE_INSTRUCTION map with 13 hand-crafted locale entries; PromptFields: liveApiLanguage?; buildSystemPrompt prepends [LANGUAGE] block from map; buildDispatchMetadata passes vs?.liveApiLanguage)_
+>   - `src/app/api/agents/[agentKey]/compiled-prompt/route.ts` _(passes agent.voiceSettings?.liveApiLanguage so preview matches runtime)_
+>   - `src/lib/agents/sessionBuilder.ts` _(language injection removed from buildLiveApiInstructions — handled upstream in buildSystemPrompt)_
+
+---
+
+> ### Agent Save — `updatedAt` Number vs Firestore Timestamp Type Mismatch Fixed
+>
+> - **What changed:** `updateAgentConfig` now handles `updatedAt` being stored as either a plain Unix-ms number or a Firestore `Timestamp` object. Both the stale-version check (`currentTs?.toMillis()`) and the post-write read-back (`newTs?.toMillis()`) now use `typeof x === "number" ? x : x?.toMillis() ?? fallback` instead of calling `.toMillis()` unconditionally.
+> - **Why:** Sarah's Firestore document had `updatedAt` stored as a plain number. The stale-version read called `.toMillis()` on it, which threw `currentTs?.toMillis is not a function`, causing every save attempt to fail with "Failed to save — please try again."
+> - **Files:**
+>   - `src/lib/firebase/agents.ts` _(updateAgentConfig: stale-check serverMs computation; post-commit updatedAtMs computation — both now typeof-guard before .toMillis())_
+
+---
+
+> ### Gemini Live API — Language / Accent Dropdown in Voice & Behavior Tab
+>
+> - **What changed:** A new "Language / Accent" select field was added to the Gemini Live Settings panel in the Voice & Behavior tab. It exposes 18 BCP-47 locale options (including `en-IN` for a South Asian / Pakistani accent). The selected value is saved to Firestore as `voiceSettings.liveApiLanguage`, passed through `buildDispatchMetadata` as `meta.liveApiLanguage`, and forwarded to `RealtimeModel` as the `language` constructor option (already supported by the Google SDK — omitting it lets Gemini auto-detect; providing a locale steers the accent).
+> - **Why:** Accent steering for Gemini Live API is controlled entirely by the BCP-47 `language` parameter — there is no native voice-cloning path. Exposing this as a user-configurable dropdown lets operators select the closest regional variant (e.g. `en-IN` for South Asian-accented English, `ur-PK` for Urdu) without requiring a code change.
+> - **Files:**
+>   - `src/lib/firebase/agents.ts` _(VoiceSettings interface: liveApiLanguage?: string; VoiceSettingsWriteSchema: liveApiLanguage z.string().max(20).optional())_
+>   - `src/lib/agents/promptBuilder.ts` _(DispatchMetadata: liveApiLanguage?: string; buildDispatchMetadata: if vs?.liveApiLanguage → meta.liveApiLanguage)_
+>   - `src/components/VoiceBehaviorTab.tsx` _(LIVE_API_LANGUAGES constant; liveApiLanguage in FormState + defaultForm + fromData + doSave; SelectField added to Gemini Live Settings grid)_
+
+---
+
+> ### Multi-Tenant Isolation — All Data Scoped to Logged-In User
+>
+> - **What changed:** Call history, dashboard stats, playground agent list, and the agents sidebar are now all filtered to only show data belonging to the currently logged-in user. The `__uid` cookie (set by `AuthContext` on login) is read server-side in every data-fetching path. `getCallHistory` accepts an optional `agentKeys?: string[]` parameter; when provided it issues a Firestore `where("agentKey", "in", [...])` query chunked into batches of 30 (Firestore `in` limit). An empty allow-list returns zero records rather than all records. `CallHistoryClient` additionally receives `userAgentKeys` (the uid-scoped set) separately from `agents` (the full set used for name resolution), so agent names always resolve correctly even for records belonging to other users that might have slipped through.
+> - **Why:** The app previously fetched all agents and all call records without user scoping, meaning every logged-in user saw every other user's agents, calls, and dashboard stats. Scoping was already applied to the sidebar (via `listAgents(uid)`), but the API routes for history and dashboard called `listAgents()` and `getCallHistory()` without a uid, leaking cross-user data.
+> - **Files:**
+>   - `src/lib/history.ts` _(getCallHistory: optional agentKeys param; Firestore "in" query chunked at 30; empty array → return [])_
+>   - `src/app/api/history/route.ts` _(reads \_\_uid cookie; listAgents(uid) → agentKeys; passes to getCallHistory)_
+>   - `src/app/api/dashboard/route.ts` _(reads \_\_uid cookie; listAgents(uid) for both agentKeys filter and agents panel; single Firestore read reused)_
+>   - `src/app/playground/page.tsx` _(reads \_\_uid cookie; passes to listAgents(uid))_
+>   - `src/app/calls/page.tsx` _(reads \_\_uid cookie; parallel listAgents(uid) + listAgents() — uid-scoped for filtering, all-agents for name lookup)_
+>   - `src/components/CallHistoryClient.tsx` _(userAgentKeys prop; userRecords memo filters records by key set; agent dropdown filtered to user's agents only; Agent column moved to first position)_
+
+---
+
+### 🐛 Bug Fixes
+
+---
+
+> ### Login — Agent Sidebar Empty After Sign-In (Hard Redirect Fix)
+>
+> - **What changed:** After a successful login, the redirect now uses `window.location.href = "/"` instead of `router.replace("/")`. The sign-out path in `AuthContext` retains `router.replace("/login")`.
+> - **Why:** Next.js App Router soft navigation reuses the cached root layout without re-running its server-side render. The root layout reads the `__uid` cookie to call `listAgents(uid)` and populate the sidebar — but that cookie is written client-side by `AuthContext` after Firebase Auth resolves. A soft nav to `/` after login hit the cached layout (rendered before the cookie existed), producing an empty agent list. Forcing a hard navigation causes the browser to make a fresh GET request with the newly written cookie, so the server renders the layout with the correct uid on first load.
+> - **Files:**
+>   - `src/app/login/page.tsx` _(useEffect redirect: window.location.href = "/" instead of router.replace("/"))_
+
+---
+
+> ### Dashboard — Trend Chip "No data" Relabelled to "No prior day"
+>
+> - **What changed:** The `TrendChip` component now renders `— No prior day` instead of `— No data` when the trend value is `null`.
+> - **Why:** "No data" was misleading — the card metrics (calls, duration, success rate) all had real values. The null trend simply meant there were no calls yesterday to compare against, not that today's data was missing. "No prior day" correctly communicates that the comparison period is empty, not the metric itself.
+> - **Files:**
+>   - `src/components/DashboardClient.tsx` _(TrendChip null branch: "No prior day")_
+
+---
+
 ## 🗓️ **2026-06-01**
 
 ---

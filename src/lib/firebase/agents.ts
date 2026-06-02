@@ -89,6 +89,7 @@ export interface VoiceSettings {
   useLiveApi?: boolean;
   liveApiModel?: string;
   liveApiVoice?: string;
+  liveApiLanguage?: string;
   liveApiConfigId?: string;
 }
 
@@ -204,6 +205,7 @@ const VoiceSettingsWriteSchema = z
     useLiveApi: z.boolean().optional(),
     liveApiModel: z.string().min(1).max(100).optional(),
     liveApiVoice: z.string().min(1).max(100).optional(),
+    liveApiLanguage: z.string().max(20).optional(),
     liveApiConfigId: z.string().min(1).max(128).optional(),
   })
   .strict();
@@ -568,7 +570,10 @@ export async function updateAgentConfig(
       const current = await docRef.get();
       if (current.exists) {
         const currentTs = (current.data() as AgentFirestoreDoc).updatedAt;
-        const serverMs = currentTs?.toMillis() ?? 0;
+        const serverMs =
+          typeof currentTs === "number"
+            ? currentTs
+            : (currentTs?.toMillis() ?? 0);
         if (serverMs !== 0 && serverMs !== meta.clientUpdatedAt) {
           const d = current.data() as AgentFirestoreDoc;
           return {
@@ -620,7 +625,9 @@ export async function updateAgentConfig(
     // Read back the new updatedAt
     const updated = await docRef.get();
     const newTs = (updated.data() as AgentFirestoreDoc).updatedAt;
-    return { ok: true, updatedAt: newTs?.toMillis() ?? Date.now() };
+    const updatedAtMs =
+      typeof newTs === "number" ? newTs : (newTs?.toMillis() ?? Date.now());
+    return { ok: true, updatedAt: updatedAtMs };
   } catch (err) {
     if (err instanceof z.ZodError) {
       return { ok: false, error: err.errors.map((e) => e.message).join("; ") };
