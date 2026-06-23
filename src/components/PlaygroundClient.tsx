@@ -2,6 +2,7 @@
 "use client";
 
 import { useState, useEffect, useCallback, useRef } from "react";
+import { createPortal } from "react-dom";
 import { useSearchParams } from "next/navigation";
 import {
   LiveKitRoom,
@@ -51,6 +52,7 @@ interface PromptSections {
 // ---- Constants --------------------------------------------------------------
 
 const COUNTRY_CODES = [
+  // ── Frequently used ──────────────────────────────────────────────
   { code: "+1", label: "US/CA (+1)" },
   { code: "+44", label: "UK (+44)" },
   { code: "+971", label: "UAE (+971)" },
@@ -59,7 +61,213 @@ const COUNTRY_CODES = [
   { code: "+61", label: "AU (+61)" },
   { code: "+49", label: "DE (+49)" },
   { code: "+33", label: "FR (+33)" },
+  // ── Middle East & North Africa ───────────────────────────────────
+  { code: "+966", label: "Saudi Arabia (+966)" },
+  { code: "+974", label: "Qatar (+974)" },
+  { code: "+973", label: "Bahrain (+973)" },
+  { code: "+965", label: "Kuwait (+965)" },
+  { code: "+968", label: "Oman (+968)" },
+  { code: "+962", label: "Jordan (+962)" },
+  { code: "+961", label: "Lebanon (+961)" },
+  { code: "+20", label: "Egypt (+20)" },
+  { code: "+212", label: "Morocco (+212)" },
+  { code: "+216", label: "Tunisia (+216)" },
+  { code: "+213", label: "Algeria (+213)" },
+  { code: "+90", label: "Turkey (+90)" },
+  { code: "+972", label: "Israel (+972)" },
+  { code: "+98", label: "Iran (+98)" },
+  { code: "+964", label: "Iraq (+964)" },
+  // ── Europe ───────────────────────────────────────────────────────
+  { code: "+353", label: "Ireland (+353)" },
+  { code: "+34", label: "Spain (+34)" },
+  { code: "+39", label: "Italy (+39)" },
+  { code: "+351", label: "Portugal (+351)" },
+  { code: "+31", label: "Netherlands (+31)" },
+  { code: "+32", label: "Belgium (+32)" },
+  { code: "+41", label: "Switzerland (+41)" },
+  { code: "+43", label: "Austria (+43)" },
+  { code: "+46", label: "Sweden (+46)" },
+  { code: "+47", label: "Norway (+47)" },
+  { code: "+45", label: "Denmark (+45)" },
+  { code: "+358", label: "Finland (+358)" },
+  { code: "+48", label: "Poland (+48)" },
+  { code: "+420", label: "Czechia (+420)" },
+  { code: "+30", label: "Greece (+30)" },
+  { code: "+40", label: "Romania (+40)" },
+  { code: "+36", label: "Hungary (+36)" },
+  { code: "+380", label: "Ukraine (+380)" },
+  { code: "+7", label: "Russia/KZ (+7)" },
+  // ── Asia-Pacific ─────────────────────────────────────────────────
+  { code: "+86", label: "China (+86)" },
+  { code: "+81", label: "Japan (+81)" },
+  { code: "+82", label: "South Korea (+82)" },
+  { code: "+852", label: "Hong Kong (+852)" },
+  { code: "+886", label: "Taiwan (+886)" },
+  { code: "+65", label: "Singapore (+65)" },
+  { code: "+60", label: "Malaysia (+60)" },
+  { code: "+62", label: "Indonesia (+62)" },
+  { code: "+63", label: "Philippines (+63)" },
+  { code: "+66", label: "Thailand (+66)" },
+  { code: "+84", label: "Vietnam (+84)" },
+  { code: "+880", label: "Bangladesh (+880)" },
+  { code: "+94", label: "Sri Lanka (+94)" },
+  { code: "+977", label: "Nepal (+977)" },
+  { code: "+93", label: "Afghanistan (+93)" },
+  { code: "+64", label: "New Zealand (+64)" },
+  // ── Americas ─────────────────────────────────────────────────────
+  { code: "+52", label: "Mexico (+52)" },
+  { code: "+55", label: "Brazil (+55)" },
+  { code: "+54", label: "Argentina (+54)" },
+  { code: "+56", label: "Chile (+56)" },
+  { code: "+57", label: "Colombia (+57)" },
+  { code: "+51", label: "Peru (+51)" },
+  // ── Africa ───────────────────────────────────────────────────────
+  { code: "+27", label: "South Africa (+27)" },
+  { code: "+234", label: "Nigeria (+234)" },
+  { code: "+254", label: "Kenya (+254)" },
+  { code: "+233", label: "Ghana (+233)" },
+  { code: "+251", label: "Ethiopia (+251)" },
 ];
+
+// Searchable country-code combobox. Native <select> can't host a search box, so
+// this is a lightweight button + popover with a filter input. Matches on both the
+// label and the dial code (so "92", "pk", or "pakistan" all find +92).
+function CountryCodeSelect({
+  value,
+  onChange,
+}: {
+  value: string;
+  onChange: (code: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState("");
+  const [pos, setPos] = useState<{
+    top: number;
+    left: number;
+    width: number;
+  } | null>(null);
+  const buttonRef = useRef<HTMLButtonElement>(null);
+  const panelRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  const selected = COUNTRY_CODES.find((c) => c.code === value);
+
+  const filtered = COUNTRY_CODES.filter((c) => {
+    const q = query.trim().toLowerCase();
+    if (!q) return true;
+    // Match on label or dial code; bare digits ("92") and "+92" both work since
+    // the code string contains the digits.
+    return c.label.toLowerCase().includes(q) || c.code.includes(q);
+  });
+
+  // Anchor the (portaled) popover to the trigger button. fixed-positioned via
+  // viewport coordinates so it escapes the surrounding Card's overflow-hidden.
+  const updatePos = useCallback(() => {
+    const r = buttonRef.current?.getBoundingClientRect();
+    if (r) setPos({ top: r.bottom + 4, left: r.left, width: 240 });
+  }, []);
+
+  // Close on outside click / Escape; keep the popover aligned on scroll/resize.
+  useEffect(() => {
+    if (!open) return;
+    const onPointer = (e: MouseEvent) => {
+      const t = e.target as Node;
+      if (!buttonRef.current?.contains(t) && !panelRef.current?.contains(t))
+        setOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setOpen(false);
+    };
+    document.addEventListener("mousedown", onPointer);
+    document.addEventListener("keydown", onKey);
+    window.addEventListener("scroll", updatePos, true);
+    window.addEventListener("resize", updatePos);
+    return () => {
+      document.removeEventListener("mousedown", onPointer);
+      document.removeEventListener("keydown", onKey);
+      window.removeEventListener("scroll", updatePos, true);
+      window.removeEventListener("resize", updatePos);
+    };
+  }, [open, updatePos]);
+
+  // Focus the search field when the popover opens.
+  useEffect(() => {
+    if (open) inputRef.current?.focus();
+  }, [open]);
+
+  return (
+    <div className="relative shrink-0">
+      <button
+        ref={buttonRef}
+        type="button"
+        onClick={() => {
+          if (!open) {
+            setQuery("");
+            updatePos();
+          }
+          setOpen((o) => !o);
+        }}
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        className="h-9 px-2 flex items-center gap-1 text-xs border border-border rounded-lg bg-card text-foreground focus:outline-none focus:ring-2 focus:ring-ring/30 focus:border-primary transition-colors"
+      >
+        <span>{selected?.label ?? value}</span>
+        <ChevronDown className="size-3.5 text-muted-foreground" />
+      </button>
+
+      {open &&
+        pos &&
+        createPortal(
+          <div
+            ref={panelRef}
+            style={{ top: pos.top, left: pos.left, width: pos.width }}
+            className="fixed z-50 rounded-lg border border-border bg-card shadow-lg overflow-hidden"
+          >
+            <div className="p-2 border-b border-border">
+              <input
+                ref={inputRef}
+                type="text"
+                placeholder="Search country or code…"
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                className="h-8 w-full rounded-lg border border-input bg-white px-3 text-xs text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring/30 focus:border-primary transition-colors"
+              />
+            </div>
+            <ul role="listbox" className="max-h-60 overflow-y-auto py-1">
+              {filtered.length === 0 ? (
+                <li className="px-3 py-2 text-xs text-muted-foreground">
+                  No matches
+                </li>
+              ) : (
+                filtered.map((c) => (
+                  <li key={c.code}>
+                    <button
+                      type="button"
+                      role="option"
+                      aria-selected={c.code === value}
+                      onClick={() => {
+                        onChange(c.code);
+                        setOpen(false);
+                      }}
+                      className={`w-full flex items-center justify-between px-3 py-1.5 text-xs text-left hover:bg-muted/60 transition-colors ${
+                        c.code === value ? "bg-muted/40 font-medium" : ""
+                      }`}
+                    >
+                      <span>{c.label}</span>
+                      {c.code === value && (
+                        <Check className="size-3.5 text-primary" />
+                      )}
+                    </button>
+                  </li>
+                ))
+              )}
+            </ul>
+          </div>,
+          document.body,
+        )}
+    </div>
+  );
+}
 
 const SECTION_LABELS: Record<keyof PromptSections, string> = {
   roleAndResponsibilities: "What it does",
@@ -756,22 +964,15 @@ function PhoneTestPanel({
         </p>
       </div>
       <div className="flex gap-2 w-full max-w-[320px]">
-        <select
+        <CountryCodeSelect
           value={countryCode}
-          onChange={(e) => {
-            setCountryCode(e.target.value);
+          onChange={(code) => {
+            setCountryCode(code);
             try {
-              localStorage.setItem("playground_country_code", e.target.value);
+              localStorage.setItem("playground_country_code", code);
             } catch {}
           }}
-          className="h-9 px-2 text-xs border border-border rounded-lg bg-card text-foreground focus:outline-none focus:ring-2 focus:ring-ring/30 focus:border-primary transition-colors shrink-0"
-        >
-          {COUNTRY_CODES.map((c) => (
-            <option key={c.code} value={c.code}>
-              {c.label}
-            </option>
-          ))}
-        </select>
+        />
         <Input
           type="tel"
           placeholder="Phone number"

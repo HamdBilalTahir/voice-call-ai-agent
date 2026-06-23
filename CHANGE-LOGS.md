@@ -27,6 +27,19 @@
 
 ---
 
+### 💅 Styling and UI Improvements
+
+---
+
+> ### Playground Phone Test — Searchable Country-Code Picker With Full Country List
+>
+> - **What changed:** Expanded `COUNTRY_CODES` from 8 to 63 entries (frequently-used block kept on top, then MENA, Europe, Asia-Pacific, Americas, and Africa). Replaced the native `<select>` with a new `CountryCodeSelect` combobox: a button + popover with a **search field** that filters on country name or dial code (`pakistan`, `pk`, `92`, and `+92` all match `+92`), keyboard `Escape`/outside-click to close, and a checkmark on the active entry. The popover renders through a **React portal** (`createPortal` to `document.body`, `position: fixed`, anchored to the trigger and re-aligned on scroll/resize) so it is no longer clipped by the test panel `Card`'s `overflow-hidden`. Selection still persists to `localStorage`.
+> - **Why:** The native select only offered 8 codes and couldn't host a search box; with a longer list it became unusable, and a plain absolutely-positioned dropdown was being cut off by the surrounding card. The portal + search make picking any country fast and the list fully visible.
+> - **Files:**
+>   - `src/components/PlaygroundClient.tsx` _(COUNTRY_CODES expanded; CountryCodeSelect searchable portal combobox replaces native select)_
+
+---
+
 ## 🗓️ **2026-06-02**
 
 ---
