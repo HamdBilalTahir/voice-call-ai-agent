@@ -5,6 +5,7 @@ import { z } from "zod";
 import { agents } from "@/lib/agents/registry";
 import { getAgent } from "@/lib/firebase/agents";
 import { buildDispatchMetadata } from "@/lib/agents/promptBuilder";
+import { enrichSystemPrompt } from "@/lib/agents/dispatchEnricher";
 import { resolveProviderKeys } from "@/lib/firebase/resolveProviderKeys";
 import { addCallRecord } from "@/lib/history";
 
@@ -82,10 +83,13 @@ export async function POST(req: Request) {
 
     try {
       if (agentDataForDispatch) {
-        const resolvedKeys = await resolveProviderKeys(agentDataForDispatch);
+        const [resolvedKeys, systemPrompt] = await Promise.all([
+          resolveProviderKeys(agentDataForDispatch),
+          enrichSystemPrompt(agentKey, agentDataForDispatch),
+        ]);
         dispatchMetadata = buildDispatchMetadata(
           agentDataForDispatch,
-          { agentKey, callHistoryId },
+          { agentKey, callHistoryId, systemPrompt },
           resolvedKeys,
         );
       }

@@ -33,6 +33,7 @@ import {
 import { useToast } from "@/components/ui/toast";
 import { InstructionsTab } from "./AIJobDescriptionTab";
 import { VoiceBehaviorTab } from "./VoiceBehaviorTab";
+import { KnowledgeBaseTab } from "./KnowledgeBaseTab";
 
 interface AgentClientProps {
   agentData: AgentFullData;
@@ -240,7 +241,7 @@ function TabContent({
       />
     );
   }
-  if (tab === "knowledge-base") return <ReadOnlyTab title="Knowledge base" />;
+  if (tab === "knowledge-base") return <KnowledgeBaseTab agentKey={agentKey} />;
   if (tab === "actions") return <ReadOnlyTab title="Tools & Actions" />;
   if (tab === "connect") return <ReadOnlyTab title="Phone & Channels" />;
   return null;

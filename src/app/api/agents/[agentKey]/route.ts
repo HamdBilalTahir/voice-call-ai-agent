@@ -6,6 +6,14 @@ import {
   AgentWriteSchema,
 } from "@/lib/firebase/agents";
 import { z } from "zod";
+import {
+  compilePromptSections,
+  hashPromptSections,
+} from "@/lib/agents/promptCompiler";
+import {
+  getCompiledPrompt,
+  saveCompiledPrompt,
+} from "@/lib/firebase/agentCompiled";
 
 type Params = Promise<{ agentKey: string }>;
 
@@ -86,5 +94,41 @@ export async function PATCH(req: NextRequest, { params }: { params: Params }) {
     return NextResponse.json({ error: msg }, { status: 500 });
   }
 
+  // Recompile if any prompt section changed — fire-and-forget so save stays fast
+  const PROMPT_SECTION_KEYS = [
+    "roleAndResponsibilities",
+    "personaLanguageAndTone",
+    "mistakesToAvoid",
+    "additionalInstructions",
+  ] as const;
+
+  if (PROMPT_SECTION_KEYS.some((k) => k in payload)) {
+    runCompileIfNeeded(agentKey).catch((err) =>
+      console.error("[compile] background compile failed:", err),
+    );
+  }
+
   return NextResponse.json(result);
+}
+
+async function runCompileIfNeeded(agentKey: string): Promise<void> {
+  const apiKey = process.env.GEMINI_API_KEY;
+  if (!apiKey) return;
+
+  const agent = await getAgent(agentKey);
+  if (!agent) return;
+
+  const sections = {
+    roleAndResponsibilities: agent.roleAndResponsibilities,
+    personaLanguageAndTone: agent.personaLanguageAndTone,
+    mistakesToAvoid: agent.mistakesToAvoid,
+    additionalInstructions: agent.additionalInstructions,
+  };
+
+  const newHash = hashPromptSections(sections);
+  const existing = await getCompiledPrompt(agentKey);
+  if (existing?.sourceHash === newHash) return;
+
+  const compiled = await compilePromptSections(sections, apiKey);
+  await saveCompiledPrompt(agentKey, compiled);
 }

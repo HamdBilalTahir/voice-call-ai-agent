@@ -50,10 +50,14 @@ export function buildDispatchMetadata(
 
   const meta: DispatchMetadata = {
     ...extra,
-    systemPrompt: buildSystemPrompt({
-      ...agentData,
-      liveApiLanguage: vs?.liveApiLanguage,
-    }),
+    // Use pre-enriched systemPrompt (compiled callAgentPrompt + KB context) if
+    // provided by the call route; fall back to building from raw sections.
+    systemPrompt:
+      (extra.systemPrompt as string | undefined) ??
+      buildSystemPrompt({
+        ...agentData,
+        liveApiLanguage: vs?.liveApiLanguage,
+      }),
     useLiveApi,
   };
 

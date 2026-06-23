@@ -3,8 +3,8 @@ import path from "path";
 import { NextResponse } from "next/server";
 import { verifyLiveKitWebhook } from "@/lib/livekit";
 import { getCallRecord, updateCallRecord, type CallUsage } from "@/lib/history";
-import { killWorkerForRoom } from "@/app/api/calls/outbound/route";
 import { extractCallData } from "@/lib/agents/callExtractor";
+import { executePostCallActions } from "@/lib/agents/actionExecutor";
 
 export async function POST(req: Request) {
   try {
@@ -46,7 +46,7 @@ export async function POST(req: Request) {
     }
 
     if (event === "room_finished" && roomName) {
-      killWorkerForRoom(roomName);
+      // Worker is persistent and shared across calls — do not kill it here.
       const callEndedAt = Date.now();
       const record = await getCallRecord(roomName);
       if (record && record.status === "in-progress") {
@@ -92,6 +92,14 @@ export async function POST(req: Request) {
           extractCallData(record.id, record.agentKey, roomName).catch((err) => {
             console.error("[webhook] post-call extraction failed:", err);
           });
+          executePostCallActions(record.id, record.agentKey, roomName).catch(
+            (err) => {
+              console.error(
+                "[webhook] post-call action execution failed:",
+                err,
+              );
+            },
+          );
         }
       }
     }

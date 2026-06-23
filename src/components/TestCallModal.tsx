@@ -40,6 +40,7 @@ type CallStatus =
   | "ringing"
   | "connected"
   | "ended"
+  | "failed"
   | "summarizing"
   | "summary";
 
@@ -61,6 +62,7 @@ const STATUS_CONFIG: Record<CallStatus, { dot: string; label: string }> = {
   ringing: { dot: "bg-warning animate-pulse", label: "Ringing…" },
   connected: { dot: "bg-success animate-pulse", label: "Connected" },
   ended: { dot: "bg-destructive", label: "Ended" },
+  failed: { dot: "bg-destructive", label: "Not answered" },
   summarizing: { dot: "bg-muted-foreground", label: "Summarizing…" },
   summary: { dot: "bg-muted-foreground", label: "Ended" },
 };
@@ -348,6 +350,30 @@ function PostCallSummary({
   );
 }
 
+// ── CallNotAnswered ───────────────────────────────────────────────────────────
+
+function CallNotAnswered({ onClose }: { onClose: () => void }) {
+  return (
+    <div className="flex flex-col items-center justify-center gap-5 flex-1 px-6 py-16 text-center">
+      <div className="size-20 rounded-full bg-destructive/10 flex items-center justify-center">
+        <PhoneOff className="size-9 text-destructive" />
+      </div>
+      <div className="flex flex-col gap-1.5">
+        <h3 className="text-base font-semibold text-foreground">
+          Call not answered
+        </h3>
+        <p className="text-xs text-muted-foreground max-w-xs">
+          The call ended before anyone picked up — it may have been declined,
+          gone to voicemail, or rung out. Try again when you&apos;re ready.
+        </p>
+      </div>
+      <Button size="sm" onClick={onClose}>
+        Done
+      </Button>
+    </div>
+  );
+}
+
 // ── TestCallModal ─────────────────────────────────────────────────────────────
 
 export function TestCallModal({
@@ -378,6 +404,11 @@ export function TestCallModal({
   const transcriptRef = useRef<TranscriptLine[]>([]);
   const statusRef = useRef<CallStatus>("dialing");
   const scrollRef = useRef<HTMLDivElement>(null);
+  // Tracks the PSTN/SIP participant lifecycle independently of the observer's
+  // own LiveKit connection: whether the callee actually answered, and whether
+  // the call has already terminated (so we transition to post-call exactly once).
+  const sipActiveRef = useRef(false);
+  const callEndedRef = useRef(false);
 
   useEffect(() => {
     statusRef.current = status;
@@ -394,6 +425,8 @@ export function TestCallModal({
     setShowEndConfirm(false);
     setShowJumpToLatest(false);
     transcriptRef.current = [];
+    sipActiveRef.current = false;
+    callEndedRef.current = false;
   }, [open]);
 
   // Dialing → ringing after 2 s
@@ -445,6 +478,75 @@ export function TestCallModal({
         roomRef.current = room;
         const translatedIds = new Set<string>();
 
+        // SIP participants join as `phone-<number>` (see /api/calls/outbound).
+        const isSipParticipant = (identity?: string) =>
+          !!identity && identity.startsWith("phone-");
+
+        // No-answer fallback: if the callee never answers, the SIP participant
+        // is torn down with no transcript. Matches the worker's 60s wait.
+        let noAnswerTimer: ReturnType<typeof setTimeout> | null = null;
+        const clearNoAnswerTimer = () => {
+          if (noAnswerTimer) {
+            clearTimeout(noAnswerTimer);
+            noAnswerTimer = null;
+          }
+        };
+
+        // The callee picked up — either sip.callStatus flipped to "active" or the
+        // first transcript line arrived (some trunks never set the attribute).
+        const markConnected = () => {
+          if (sipActiveRef.current || callEndedRef.current) return;
+          sipActiveRef.current = true;
+          clearNoAnswerTimer();
+          if (!mounted) return;
+          setStatus("connected");
+          setConnectedAt(Date.now());
+        };
+
+        // Run the post-call summary flow exactly once.
+        const finishCall = async () => {
+          if (callEndedRef.current) return;
+          callEndedRef.current = true;
+          clearNoAnswerTimer();
+          if (!mounted) return;
+          setStatus("summarizing");
+          const text = transcriptToText(transcriptRef.current);
+          try {
+            const sumRes = await fetch("/api/calls/summary", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ transcript: text }),
+            });
+            if (mounted) {
+              setSummary(await sumRes.json());
+              setStatus("summary");
+            }
+          } catch {
+            if (mounted) setStatus("summary");
+          }
+        };
+
+        // The call ended before the callee ever answered (no answer / busy /
+        // declined) — skip the empty summary and show a terminal state.
+        const markNotAnswered = () => {
+          if (callEndedRef.current) return;
+          callEndedRef.current = true;
+          clearNoAnswerTimer();
+          if (mounted) setStatus("failed");
+          room.disconnect();
+        };
+
+        // The SIP participant left the room: a hangup if they had answered,
+        // otherwise a missed/declined call.
+        const handleSipGone = () => {
+          if (callEndedRef.current) return;
+          if (sipActiveRef.current) {
+            finishCall();
+          } else {
+            markNotAnswered();
+          }
+        };
+
         room.registerTextStreamHandler(
           "lk.transcription",
           async (reader: any, participantInfo: any) => {
@@ -454,6 +556,10 @@ export function TestCallModal({
               reader.info.attributes?.["lk.transcription_final"] === "false";
             const isAgent = !participantInfo.identity.startsWith("phone-");
             const speaker: "Agent" | "Caller" = isAgent ? "Agent" : "Caller";
+
+            // A transcript line means audio is flowing — the call is live even
+            // if the sip.callStatus attribute never arrived.
+            markConnected();
 
             if (!transcriptRef.current.some((l) => l.id === segmentId)) {
               transcriptRef.current = [
@@ -503,29 +609,47 @@ export function TestCallModal({
           },
         );
 
+        // Observer joined the room — the phone is still ringing until the SIP
+        // participant reports "active". If it already answered before we joined,
+        // pick that up immediately.
         room.on(RoomEvent.Connected, () => {
-          if (!mounted) return;
-          setStatus("connected");
-          setConnectedAt(Date.now());
+          if (!mounted || callEndedRef.current) return;
+          if (!sipActiveRef.current) setStatus("ringing");
+          room.remoteParticipants.forEach((p: any) => {
+            if (
+              isSipParticipant(p.identity) &&
+              p.attributes?.["sip.callStatus"] === "active"
+            ) {
+              markConnected();
+            }
+          });
+          noAnswerTimer = setTimeout(() => {
+            if (!sipActiveRef.current) markNotAnswered();
+          }, 60_000);
         });
 
-        room.on(RoomEvent.Disconnected, async () => {
-          if (!mounted) return;
-          setStatus("summarizing");
-          const text = transcriptToText(transcriptRef.current);
-          try {
-            const sumRes = await fetch("/api/calls/summary", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ transcript: text }),
-            });
-            if (mounted) {
-              setSummary(await sumRes.json());
-              setStatus("summary");
+        // Callee answered: the SIP bridge flips sip.callStatus to "active".
+        room.on(
+          RoomEvent.ParticipantAttributesChanged,
+          (changed: Record<string, string>, p: any) => {
+            if (
+              isSipParticipant(p.identity) &&
+              changed["sip.callStatus"] === "active"
+            ) {
+              markConnected();
             }
-          } catch {
-            if (mounted) setStatus("summary");
-          }
+          },
+        );
+
+        // Callee hung up (or never answered): the SIP participant leaves.
+        room.on(RoomEvent.ParticipantDisconnected, (p: any) => {
+          if (isSipParticipant(p.identity)) handleSipGone();
+        });
+
+        // The room itself closed (e.g. worker deleted it after a farewell, or a
+        // network drop) — fall back to the post-call view.
+        room.on(RoomEvent.Disconnected, () => {
+          handleSipGone();
         });
 
         await room.connect(url, token);
@@ -563,7 +687,10 @@ export function TestCallModal({
 
   const handleClose = useCallback(() => {
     const active =
-      status !== "ended" && status !== "summary" && status !== "summarizing";
+      status !== "ended" &&
+      status !== "failed" &&
+      status !== "summary" &&
+      status !== "summarizing";
     if (active) {
       setShowEndConfirm(true);
     } else {
@@ -646,8 +773,11 @@ export function TestCallModal({
         )}
       </DialogHeader>
 
-      {/* ── Summary view ── */}
-      {status === "summary" || status === "summarizing" ? (
+      {/* ── Not-answered view ── */}
+      {status === "failed" ? (
+        <CallNotAnswered onClose={onClose} />
+      ) : status === "summary" || status === "summarizing" ? (
+        /* ── Summary view ── */
         <PostCallSummary
           summary={status === "summarizing" ? null : summary}
           transcript={transcript}

@@ -1,82 +1,12 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
-import fs from "fs";
-import path from "path";
-import { spawn, type ChildProcess } from "child_process";
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { SipClient, AgentDispatchClient } from "livekit-server-sdk";
 import { getAgent } from "@/lib/firebase/agents";
 import { buildDispatchMetadata } from "@/lib/agents/promptBuilder";
+import { enrichSystemPrompt } from "@/lib/agents/dispatchEnricher";
 import { resolveProviderKeys } from "@/lib/firebase/resolveProviderKeys";
-
-const WORKER_PID_DIR = path.join(process.cwd(), ".worker-pids");
-
-export function saveWorkerPid(roomName: string, pid: number) {
-  fs.mkdirSync(WORKER_PID_DIR, { recursive: true });
-  fs.writeFileSync(path.join(WORKER_PID_DIR, `${roomName}.pid`), String(pid));
-}
-
-export function killWorkerForRoom(roomName: string) {
-  const pidFile = path.join(WORKER_PID_DIR, `${roomName}.pid`);
-  try {
-    const pid = parseInt(fs.readFileSync(pidFile, "utf-8").trim(), 10);
-    if (pid) {
-      try {
-        process.kill(pid, "SIGTERM");
-      } catch {
-        /* already gone */
-      }
-    }
-    fs.unlinkSync(pidFile);
-    console.log(`[worker] killed PID ${pid} for room ${roomName}`);
-  } catch {
-    /* pid file doesn't exist — worker already gone */
-  }
-}
-
-function spawnWorker(): Promise<ChildProcess> {
-  return new Promise((resolve, reject) => {
-    const tsxBin = path.join(path.dirname(process.execPath), "tsx");
-    const agentFile = path.join(
-      process.cwd(),
-      "src/lib/agents/worker/agent.ts",
-    );
-
-    const child = spawn(tsxBin, [agentFile, "start"], {
-      cwd: process.cwd(),
-      env: { ...process.env },
-      stdio: ["ignore", "pipe", "pipe"],
-      detached: false,
-    });
-
-    const timer = setTimeout(() => {
-      child.kill("SIGKILL");
-      reject(new Error("Worker registration timed out after 15s"));
-    }, 15_000);
-
-    let registered = false;
-    child.stdout?.on("data", (chunk: Buffer) => {
-      process.stdout.write(chunk);
-      if (!registered && chunk.toString().includes("registered worker")) {
-        registered = true;
-        clearTimeout(timer);
-        resolve(child);
-      }
-    });
-    child.stderr?.on("data", (chunk: Buffer) => process.stderr.write(chunk));
-
-    child.on("error", (err) => {
-      clearTimeout(timer);
-      reject(err);
-    });
-    child.on("exit", (code) => {
-      if (!registered) {
-        clearTimeout(timer);
-        reject(new Error(`Worker exited before registering (code ${code})`));
-      }
-    });
-  });
-}
+import { ensureWorker } from "@/lib/agents/workerManager";
 
 const sipClient = new SipClient(
   process.env.LIVEKIT_URL!,
@@ -261,7 +191,10 @@ export async function POST(req: Request) {
     if (agentKey && agentData) {
       console.log("[outbound] resolving provider keys");
       try {
-        const resolvedKeys = await resolveProviderKeys(agentData);
+        const [resolvedKeys, systemPrompt] = await Promise.all([
+          resolveProviderKeys(agentData),
+          enrichSystemPrompt(agentKey, agentData),
+        ]);
         console.log("[outbound] provider keys resolved", {
           hasLiveApiKey: !!resolvedKeys.liveApiKey,
           hasLlmApiKey: !!resolvedKeys.llmApiKey,
@@ -273,6 +206,7 @@ export async function POST(req: Request) {
           {
             agentKey,
             callHistoryId,
+            systemPrompt,
             sipParticipantIdentity: `phone-${toNumber}`,
           },
           resolvedKeys,
@@ -300,19 +234,22 @@ export async function POST(req: Request) {
       });
     }
 
-    // 7. Spawn a fresh worker and wait for it to register with LiveKit
-    console.log("[outbound] spawning worker");
-    let workerProcess: ChildProcess | undefined;
-    try {
-      workerProcess = await spawnWorker();
-      saveWorkerPid(roomName, workerProcess.pid!);
-      console.log("[outbound] worker registered", { pid: workerProcess.pid });
-    } catch (err) {
-      console.error("[outbound] worker failed to start", err);
-      return NextResponse.json(
-        { error: "Worker failed to start" },
-        { status: 500 },
-      );
+    // 7. Ensure a healthy persistent worker registered under the agent's dispatch
+    //    rule is running BEFORE we ring the phone. Reuses an existing worker;
+    //    spawns and waits for LiveKit registration only when none is ready. This
+    //    guarantees the dispatch (step 9) lands on a worker that can accept it.
+    if (agentKey) {
+      console.log("[outbound] ensuring worker ready", { dispatchRule });
+      try {
+        const ensured = await ensureWorker(agentKey);
+        console.log("[outbound] worker ready", ensured);
+      } catch (err) {
+        console.error("[outbound] worker failed to start", err);
+        return NextResponse.json(
+          { error: "Worker failed to start" },
+          { status: 500 },
+        );
+      }
     }
 
     // 8. Create SIP participant (dispatch outbound call)
@@ -322,18 +259,12 @@ export async function POST(req: Request) {
       roomName,
       participantIdentity,
     });
-    try {
-      await sipClient.createSipParticipant(sipTrunkId, toNumber, roomName, {
-        participantIdentity,
-        playRingtone: true,
-        // @ts-expect-error sipCallFrom is valid in newer versions or specific cases
-        sipCallFrom: twilioPhoneNumber,
-      });
-    } catch (err) {
-      workerProcess.kill("SIGTERM");
-      killWorkerForRoom(roomName);
-      throw err;
-    }
+    await sipClient.createSipParticipant(sipTrunkId, toNumber, roomName, {
+      participantIdentity,
+      playRingtone: true,
+      // @ts-expect-error sipCallFrom is valid in newer versions or specific cases
+      sipCallFrom: twilioPhoneNumber,
+    });
     console.log("[outbound] SIP participant created");
 
     // 9. Dispatch the agent to the room so it joins and speaks

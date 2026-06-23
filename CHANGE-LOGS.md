@@ -1,3 +1,32 @@
+## 🗓️ **2026-06-23**
+
+---
+
+### 🐛 Fixes
+
+---
+
+> ### Phone-Call Test — Fix Dead-Air Calls / `ERR_IPC_CHANNEL_CLOSED` (Worker Start/Dispatch Race)
+>
+> - **What changed:** Consolidated worker management onto a single persistent per-agent worker and removed the conflicting per-call ephemeral worker. A new `ensureWorker(agentKey)` helper resolves the agent's name slug, **reuses** a live worker only if its registration name still matches the slug, and otherwise spawns one **with `AGENT_DISPATCH_RULE=<slug>`** and blocks until it prints `registered worker` (20s timeout). `/api/agents/process` `start` is now idempotent (no kill-and-respawn on every test) and readiness-blocking; restart only happens when no worker is running or the agent was renamed. `/api/calls/outbound` now calls `ensureWorker` **before** ringing the phone instead of spawning its own worker, and `room_finished` no longer kills the worker (it's shared across calls). Worker config (prompt, keys, greeting) is passed per-dispatch in job metadata, so config edits never require a restart.
+> - **Why:** A phone test connected for 194s but the agent never joined — the caller heard silence and no transcript was saved. The outbound route spawned an ephemeral worker that registered under the fallback name `voice-agent` (singular `AGENT_DISPATCH_RULE` is not in `.env`) while the dispatch targeted the agent slug `sarah-layref`, so that worker could never serve the call. Meanwhile `/api/agents/process` `start` unconditionally SIGINT'd the running worker and respawned without waiting for registration, so the dispatch raced a draining/half-started worker and `JobProcExecutor.launchJob` hit a closed IPC channel. Ensuring a healthy, correctly-named worker is ready before dispatch closes the race. Also fixes real outbound calls, which had the same wrong-name flaw.
+> - **Files:**
+>   - `src/lib/agents/workerManager.ts` _(new — ensureWorker, spawn+wait-for-registration, PID sidecar with slug)_
+>   - `src/app/api/agents/process/route.ts` _(idempotent, readiness-blocking start via ensureWorker)_
+>   - `src/app/api/calls/outbound/route.ts` _(drop ephemeral worker; ensureWorker before dispatch)_
+>   - `src/app/api/agent/route.ts` _(room_finished no longer kills the shared worker)_
+
+---
+
+> ### Playground Call Modal — Real PSTN Call Status Instead of Observer Connection
+>
+> - **What changed:** The test-call modal now tracks the `phone-<number>` SIP participant's lifecycle instead of the dashboard observer's own LiveKit connection. Status stays **"Ringing…"** until the callee actually answers (`sip.callStatus === "active"`, or the first transcript line as a fallback), at which point it flips to **"Connected"** and starts the duration timer. A callee hangup (`ParticipantDisconnected` on the `phone-*` participant) now ends the call and routes to the post-call summary, and an unanswered call (disconnect-before-active, or a 60s no-answer timeout) shows a new **"Not answered"** terminal screen. All transitions run through a single `callEndedRef` guard so post-call fires exactly once.
+> - **Why:** Previously `RoomEvent.Connected` (observer joining the room) marked the call "Connected" while the phone was still ringing or never picked up, and `RoomEvent.Disconnected` only fired for the observer — so a callee hangup never ended the UI and the modal spun on "Waiting for conversation to start…" indefinitely. This mirrors the SIP signals the worker already uses in `genericEntry.ts`.
+> - **Files:**
+>   - `src/components/TestCallModal.tsx` _(SIP participant tracking, ringing→connected on answer, hangup/no-answer handling, CallNotAnswered view, "failed" status)_
+
+---
+
 ## 🗓️ **2026-06-02**
 
 ---

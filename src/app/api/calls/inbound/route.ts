@@ -3,6 +3,7 @@ import { AgentDispatchClient, RoomServiceClient } from "livekit-server-sdk";
 import { z } from "zod";
 import { getAgent } from "@/lib/firebase/agents";
 import { buildDispatchMetadata } from "@/lib/agents/promptBuilder";
+import { enrichSystemPrompt } from "@/lib/agents/dispatchEnricher";
 import { resolveProviderKeys } from "@/lib/firebase/resolveProviderKeys";
 import { addCallRecord } from "@/lib/history";
 
@@ -53,10 +54,13 @@ export async function POST(req: NextRequest) {
   let dispatchMetadata: string | undefined;
   let pipelineMode: "cascading" | "live_api" = "cascading";
   try {
-    const resolvedKeys = await resolveProviderKeys(agentData);
+    const [resolvedKeys, systemPrompt] = await Promise.all([
+      resolveProviderKeys(agentData),
+      enrichSystemPrompt(agentKey, agentData),
+    ]);
     dispatchMetadata = buildDispatchMetadata(
       agentData,
-      { callerNumber },
+      { callerNumber, systemPrompt },
       resolvedKeys,
     );
     pipelineMode = agentData.voiceSettings?.useLiveApi
