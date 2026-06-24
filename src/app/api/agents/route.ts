@@ -40,6 +40,9 @@ const CreateAgentBodySchema = z.object({
       liveApiModel: z.string().min(1).max(100).optional(),
       liveApiVoice: z.string().min(1).max(100).optional(),
       liveApiConfigId: z.string().min(1).max(128).optional(),
+      liveApiThinkingLevel: z
+        .enum(["minimal", "low", "medium", "high"])
+        .optional(),
     })
     .optional(),
 });

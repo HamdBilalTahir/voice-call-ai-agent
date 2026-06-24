@@ -4,10 +4,7 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { Room, RoomEvent } from "livekit-client";
 import {
-  MicOff,
-  PauseCircle,
   PhoneOff,
-  UserPlus,
   ChevronDown,
   Check,
   Copy,
@@ -215,113 +212,119 @@ function PostCallSummary({
     );
 
   return (
-    <div className="flex flex-col gap-6 overflow-y-auto flex-1 px-6 py-5">
-      <div className="flex items-center justify-between">
-        <div>
-          <h3 className="text-base font-semibold text-foreground">
-            Call Summary
-          </h3>
-          <p className="text-xs text-muted-foreground mt-0.5">
-            AI-generated · {transcript.filter((l) => l.isFinal).length} lines
-          </p>
-        </div>
-        <div className="flex items-center gap-3">
-          {sentimentIcon}
-          <div className="flex flex-col items-end gap-1">
-            <span className="text-xs font-medium text-foreground capitalize">
-              {summary?.sentiment ?? "neutral"} sentiment
-            </span>
-            <div className="w-24 h-1.5 bg-muted rounded-full overflow-hidden">
-              <div
-                className={`h-full rounded-full transition-all ${
-                  (summary?.sentimentScore ?? 50) >= 60
-                    ? "bg-success"
-                    : (summary?.sentimentScore ?? 50) >= 40
-                      ? "bg-warning"
-                      : "bg-destructive"
-                }`}
-                style={{ width: `${summary?.sentimentScore ?? 50}%` }}
-              />
+    <div className="flex flex-col gap-5 flex-1 min-h-0 px-6 py-5">
+      {/* Summary region — scrolls on its own if it grows tall, capped so the
+          transcript always gets the lion's share of the height. */}
+      <div className="flex flex-col gap-5 shrink-0 overflow-y-auto max-h-[45%] pr-1">
+        <div className="flex items-center justify-between">
+          <div>
+            <h3 className="text-base font-semibold text-foreground">
+              Call Summary
+            </h3>
+            <p className="text-xs text-muted-foreground mt-0.5">
+              AI-generated · {transcript.filter((l) => l.isFinal).length} lines
+            </p>
+          </div>
+          <div className="flex items-center gap-3">
+            {sentimentIcon}
+            <div className="flex flex-col items-end gap-1">
+              <span className="text-xs font-medium text-foreground capitalize">
+                {summary?.sentiment ?? "neutral"} sentiment
+              </span>
+              <div className="w-24 h-1.5 bg-muted rounded-full overflow-hidden">
+                <div
+                  className={`h-full rounded-full transition-all ${
+                    (summary?.sentimentScore ?? 50) >= 60
+                      ? "bg-success"
+                      : (summary?.sentimentScore ?? 50) >= 40
+                        ? "bg-warning"
+                        : "bg-destructive"
+                  }`}
+                  style={{ width: `${summary?.sentimentScore ?? 50}%` }}
+                />
+              </div>
             </div>
           </div>
         </div>
-      </div>
 
-      {/* Bullets */}
-      <div className="flex flex-col gap-2">
-        <h4 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-          Key Points
-        </h4>
-        {summary ? (
-          <ul className="flex flex-col gap-2">
-            {summary.bullets.map((b, i) => (
-              <li
-                key={i}
-                className="flex items-start gap-2.5 text-sm text-foreground"
-              >
-                <div className="size-1.5 rounded-full bg-primary shrink-0 mt-[7px]" />
-                {b}
-              </li>
-            ))}
-          </ul>
-        ) : (
+        {/* Bullets */}
+        <div className="flex flex-col gap-2">
+          <h4 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+            Key Points
+          </h4>
+          {summary ? (
+            <ul className="flex flex-col gap-2">
+              {summary.bullets.map((b, i) => (
+                <li
+                  key={i}
+                  className="flex items-start gap-2.5 text-sm text-foreground"
+                >
+                  <div className="size-1.5 rounded-full bg-primary shrink-0 mt-[7px]" />
+                  {b}
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <div className="flex flex-col gap-2">
+              <Skeleton className="h-4 w-full" />
+              <Skeleton className="h-4 w-4/5" />
+              <Skeleton className="h-4 w-3/4" />
+            </div>
+          )}
+        </div>
+
+        {/* Action items */}
+        {(summary?.actionItems ?? []).length > 0 && (
           <div className="flex flex-col gap-2">
-            <Skeleton className="h-4 w-full" />
-            <Skeleton className="h-4 w-4/5" />
-            <Skeleton className="h-4 w-3/4" />
+            <h4 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+              Action Items
+            </h4>
+            <ul className="flex flex-col gap-2">
+              {summary!.actionItems.map((item, i) => (
+                <li key={i} className="flex items-start gap-2.5">
+                  <div className="size-4 rounded border border-border flex items-center justify-center shrink-0 mt-0.5">
+                    <Check className="size-2.5 text-muted-foreground" />
+                  </div>
+                  <span className="text-sm text-foreground">{item}</span>
+                </li>
+              ))}
+            </ul>
           </div>
         )}
       </div>
 
-      {/* Action items */}
-      {(summary?.actionItems ?? []).length > 0 && (
-        <div className="flex flex-col gap-2">
-          <h4 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-            Action Items
-          </h4>
-          <ul className="flex flex-col gap-2">
-            {summary!.actionItems.map((item, i) => (
-              <li key={i} className="flex items-start gap-2.5">
-                <div className="size-4 rounded border border-border flex items-center justify-center shrink-0 mt-0.5">
-                  <Check className="size-2.5 text-muted-foreground" />
-                </div>
-                <span className="text-sm text-foreground">{item}</span>
-              </li>
-            ))}
-          </ul>
-        </div>
-      )}
-
-      {/* Full transcript */}
+      {/* Full transcript — grows to fill the remaining height and scrolls */}
       {transcript.length > 0 && (
-        <div className="flex flex-col gap-2">
-          <h4 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+        <div className="flex flex-col gap-2 flex-1 min-h-0">
+          <h4 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground shrink-0">
             Full Transcript
           </h4>
-          <div className="bg-muted/40 border border-border rounded-xl p-3 max-h-44 overflow-y-auto space-y-2">
+          <div className="bg-muted/40 border border-border rounded-xl p-4 flex-1 min-h-0 overflow-y-auto space-y-3">
             {transcript
               .filter((l) => l.isFinal && l.text.trim())
-              .map((l) => (
-                <p
-                  key={l.id}
-                  className="text-xs text-foreground leading-relaxed"
-                >
-                  <span
-                    className={`font-semibold ${
-                      l.speaker === "Agent" ? "text-primary" : "text-success"
-                    }`}
-                  >
-                    {l.speaker}:
-                  </span>{" "}
-                  {l.text}
-                </p>
-              ))}
+              .map((l) => {
+                const isAgent = l.speaker === "Agent";
+                return (
+                  <div key={l.id} className="flex flex-col gap-0.5">
+                    <span
+                      className={`text-[10px] font-semibold uppercase tracking-wide ${
+                        isAgent ? "text-primary" : "text-success"
+                      }`}
+                    >
+                      {l.speaker}
+                    </span>
+                    <p className="text-sm text-foreground leading-relaxed">
+                      {l.text}
+                    </p>
+                  </div>
+                );
+              })}
           </div>
         </div>
       )}
 
       {/* CTAs */}
-      <div className="flex items-center gap-3 pt-1 border-t border-border mt-auto">
+      <div className="flex items-center gap-3 pt-3 border-t border-border shrink-0 mt-auto">
         <Button size="sm" onClick={onClose}>
           Done
         </Button>
@@ -367,7 +370,7 @@ function CallNotAnswered({ onClose }: { onClose: () => void }) {
           gone to voicemail, or rung out. Try again when you&apos;re ready.
         </p>
       </div>
-      <Button size="sm" onClick={onClose}>
+      <Button onClick={onClose} className="w-full max-w-[240px] h-11 text-sm">
         Done
       </Button>
     </div>
@@ -397,22 +400,16 @@ export function TestCallModal({
   const [summary, setSummary] = useState<CallSummary | null>(null);
   const [duration, setDuration] = useState(0);
   const [connectedAt, setConnectedAt] = useState<number | null>(null);
-  const [showEndConfirm, setShowEndConfirm] = useState(false);
   const [showJumpToLatest, setShowJumpToLatest] = useState(false);
 
   const roomRef = useRef<Room | null>(null);
   const transcriptRef = useRef<TranscriptLine[]>([]);
-  const statusRef = useRef<CallStatus>("dialing");
   const scrollRef = useRef<HTMLDivElement>(null);
   // Tracks the PSTN/SIP participant lifecycle independently of the observer's
   // own LiveKit connection: whether the callee actually answered, and whether
   // the call has already terminated (so we transition to post-call exactly once).
   const sipActiveRef = useRef(false);
   const callEndedRef = useRef(false);
-
-  useEffect(() => {
-    statusRef.current = status;
-  }, [status]);
 
   // Reset on open
   useEffect(() => {
@@ -422,21 +419,11 @@ export function TestCallModal({
     setSummary(null);
     setDuration(0);
     setConnectedAt(null);
-    setShowEndConfirm(false);
     setShowJumpToLatest(false);
     transcriptRef.current = [];
     sipActiveRef.current = false;
     callEndedRef.current = false;
   }, [open]);
-
-  // Dialing → ringing after 2 s
-  useEffect(() => {
-    if (!open || status !== "dialing") return;
-    const t = setTimeout(() => {
-      if (statusRef.current === "dialing") setStatus("ringing");
-    }, 2000);
-    return () => clearTimeout(t);
-  }, [open, status]);
 
   // Duration ticker
   useEffect(() => {
@@ -609,18 +596,31 @@ export function TestCallModal({
           },
         );
 
-        // Observer joined the room — the phone is still ringing until the SIP
-        // participant reports "active". If it already answered before we joined,
-        // pick that up immediately.
+        // Map the SIP bridge's real call state onto the UI. LiveKit sets the
+        // `sip.callStatus` attribute to "dialing" → "ringing" → "active" →
+        // "hangup" as Twilio reports them. We reflect the actual state instead
+        // of guessing: "ringing" only shows once the handset is truly ringing,
+        // "active" means the callee picked up. Trunks that skip "ringing" simply
+        // stay on "Dialing" until "active" (or the first transcript) arrives.
+        const applyCallStatus = (callStatus?: string) => {
+          if (!mounted || callEndedRef.current) return;
+          if (callStatus === "active") {
+            markConnected();
+          } else if (callStatus === "ringing") {
+            if (!sipActiveRef.current) setStatus("ringing");
+          } else if (callStatus === "hangup") {
+            handleSipGone();
+          }
+        };
+
+        // Observer joined the room. The call stays "dialing" until the SIP
+        // participant reports a real status. If it already answered/rang before
+        // we joined, pick that up immediately.
         room.on(RoomEvent.Connected, () => {
           if (!mounted || callEndedRef.current) return;
-          if (!sipActiveRef.current) setStatus("ringing");
           room.remoteParticipants.forEach((p: any) => {
-            if (
-              isSipParticipant(p.identity) &&
-              p.attributes?.["sip.callStatus"] === "active"
-            ) {
-              markConnected();
+            if (isSipParticipant(p.identity)) {
+              applyCallStatus(p.attributes?.["sip.callStatus"]);
             }
           });
           noAnswerTimer = setTimeout(() => {
@@ -628,15 +628,12 @@ export function TestCallModal({
           }, 60_000);
         });
 
-        // Callee answered: the SIP bridge flips sip.callStatus to "active".
+        // The SIP bridge updates sip.callStatus as the call progresses.
         room.on(
           RoomEvent.ParticipantAttributesChanged,
           (changed: Record<string, string>, p: any) => {
-            if (
-              isSipParticipant(p.identity) &&
-              changed["sip.callStatus"] === "active"
-            ) {
-              markConnected();
+            if (isSipParticipant(p.identity) && "sip.callStatus" in changed) {
+              applyCallStatus(changed["sip.callStatus"]);
             }
           },
         );
@@ -676,14 +673,21 @@ export function TestCallModal({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, roomName]);
 
+  // Hang up the real call: delete the LiveKit room so the SIP bridge terminates
+  // the PSTN/Twilio call (works while ringing too — not just once connected).
+  // Disconnecting the observer alone leaves the call running, so we do both.
   const endCall = useCallback(() => {
-    setShowEndConfirm(false);
+    if (roomName) {
+      fetch(`/api/calls/${roomName}/hangup`, { method: "POST" }).catch(
+        () => {},
+      );
+    }
     if (roomRef.current) {
       roomRef.current.disconnect();
     } else {
       setStatus("ended");
     }
-  }, []);
+  }, [roomName]);
 
   const handleClose = useCallback(() => {
     const active =
@@ -691,12 +695,11 @@ export function TestCallModal({
       status !== "failed" &&
       status !== "summary" &&
       status !== "summarizing";
-    if (active) {
-      setShowEndConfirm(true);
-    } else {
-      onClose();
-    }
-  }, [status, onClose]);
+    // Closing a live call hangs it up — a backgrounded test call would otherwise
+    // keep ringing/charging. One click: end + dismiss.
+    if (active) endCall();
+    onClose();
+  }, [status, endCall, onClose]);
 
   const handleScroll = () => {
     if (!scrollRef.current) return;
@@ -706,6 +709,12 @@ export function TestCallModal({
 
   const { dot, label } = STATUS_CONFIG[status];
   const isActive = status === "connected";
+  // Call is over (or never connected) — nothing left to hang up.
+  const isTerminal =
+    status === "ended" ||
+    status === "failed" ||
+    status === "summary" ||
+    status === "summarizing";
   const showTranscript =
     status === "connected" || status === "ended" || status === "summarizing";
 
@@ -752,25 +761,7 @@ export function TestCallModal({
           )}
         </div>
 
-        {showEndConfirm ? (
-          <div className="flex items-center gap-2 shrink-0 ml-4">
-            <span className="text-xs text-foreground">End call?</span>
-            <button
-              onClick={endCall}
-              className="text-xs text-destructive font-semibold hover:text-destructive/80"
-            >
-              End
-            </button>
-            <button
-              onClick={() => setShowEndConfirm(false)}
-              className="text-xs text-muted-foreground hover:text-foreground"
-            >
-              Cancel
-            </button>
-          </div>
-        ) : (
-          <DialogClose onClose={handleClose} />
-        )}
+        <DialogClose onClose={handleClose} />
       </DialogHeader>
 
       {/* ── Not-answered view ── */}
@@ -806,44 +797,14 @@ export function TestCallModal({
                 </div>
               </div>
 
-              <div className="flex items-center gap-2 shrink-0">
-                {(
-                  [
-                    {
-                      icon: MicOff,
-                      label: "Mute",
-                      title: "Not available for phone calls",
-                    },
-                    { icon: PauseCircle, label: "Hold", title: "Coming soon" },
-                  ] as const
-                ).map(({ icon: Icon, label: lbl, title }) => (
-                  <button
-                    key={lbl}
-                    disabled
-                    title={title}
-                    className="flex flex-col items-center gap-1 p-2.5 rounded-xl bg-card border border-border text-muted-foreground opacity-40 cursor-not-allowed"
-                  >
-                    <Icon className="size-4" />
-                    <span className="text-[10px]">{lbl}</span>
-                  </button>
-                ))}
-                <button
-                  onClick={() => setShowEndConfirm(true)}
-                  disabled={!isActive}
-                  className="flex flex-col items-center gap-1 p-2.5 rounded-xl bg-destructive/10 border border-destructive/30 text-destructive hover:bg-destructive/20 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-                >
-                  <PhoneOff className="size-4" />
-                  <span className="text-[10px] font-medium">End</span>
-                </button>
-                <button
-                  disabled
-                  title="Human handoff coming soon"
-                  className="flex flex-col items-center gap-1 p-2.5 rounded-xl bg-card border border-border text-muted-foreground opacity-40 cursor-not-allowed"
-                >
-                  <UserPlus className="size-4" />
-                  <span className="text-[10px]">Take over</span>
-                </button>
-              </div>
+              <button
+                onClick={endCall}
+                disabled={isTerminal}
+                className="flex items-center gap-2 px-5 h-10 rounded-full bg-destructive text-white text-sm font-semibold shadow-sm hover:bg-destructive/90 active:scale-[0.98] transition disabled:opacity-40 disabled:cursor-not-allowed shrink-0"
+              >
+                <PhoneOff className="size-4" />
+                {isActive ? "End call" : "Cancel"}
+              </button>
             </div>
           </div>
 

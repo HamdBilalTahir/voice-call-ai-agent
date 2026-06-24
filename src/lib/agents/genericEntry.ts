@@ -111,7 +111,7 @@ async function runLiveApiSession(
     { callHistoryId: meta.callHistoryId, agentKey: meta.agentKey },
     "[Pipeline] building session",
   );
-  const session = buildSession(meta, defaults);
+  const session = await buildSession(meta, defaults);
   const s = session as any;
 
   const callHistoryId = meta.callHistoryId;
@@ -129,6 +129,17 @@ async function runLiveApiSession(
     const p = appendTurn(callHistoryId, turn);
     pendingTranscriptWrites.push(p);
   }
+
+  // ── Per-turn latency instrumentation ──────────────────────────────────────
+  // Diagnoses slow time-to-first-audio (RCA: gemini-3.1 thinking, throttling,
+  // reconnects, or tool-call blocking). The `slow` warn line is always emitted
+  // so regressions surface in prod; set LIVE_LATENCY_DEBUG=1 for every turn.
+  // `ttftMs` (from metrics) measures generation-start → first audio chunk —
+  // the dominant component of perceived response delay.
+  const latencyDebug = process.env.LIVE_LATENCY_DEBUG === "1";
+  const SLOW_TTFA_MS = 800; // exit-criteria threshold
+  let turnIndex = 0;
+  let turnToolExecuted = false; // did a tool run during the current turn?
 
   s.on("user_input_transcribed", (ev: any) => {
     logger.info(
@@ -216,21 +227,61 @@ async function runLiveApiSession(
     }
   });
   s.on("error", (ev: any) => {
-    logger.error({ err: ev.error }, "[Error] session error");
+    // Surface connection/throttling failures (429s, disconnects, goAway) with
+    // full detail so they can be correlated against slow turns. The plugin also
+    // logs reconnects/session-resumption in the worker's own pino output.
+    const err = ev?.error ?? ev;
+    logger.error(
+      {
+        err,
+        code: err?.code,
+        status: err?.status ?? err?.statusCode,
+        message: err?.message,
+        room: roomName,
+      },
+      "[Error] session error (check for throttling / reconnect)",
+    );
+  });
+  // Mark when a tool runs so the per-turn latency line can attribute a slow turn
+  // to tool-call BLOCKING (Gemini Realtime halts audio while tools execute).
+  s.on("function_tools_executed", (ev: any) => {
+    turnToolExecuted = true;
+    const names = (ev?.functionCalls ?? [])
+      .map((c: any) => c?.name)
+      .filter(Boolean);
+    logger.info({ tools: names, room: roomName }, "[Tool] tools executed");
   });
   s.on("metrics_collected", (ev: any) => {
     const m = ev?.metrics;
     if (!m || m.type !== "realtime_model_metrics") return;
     realtimeInputTokens += m.inputTokens ?? 0;
     realtimeOutputTokens += m.outputTokens ?? 0;
-    logger.info(
-      {
-        inputTokens: m.inputTokens,
-        outputTokens: m.outputTokens,
-        ttftMs: m.ttftMs,
-      },
-      "[Live] realtime metrics",
-    );
+    turnIndex += 1;
+    const ttftMs = typeof m.ttftMs === "number" ? m.ttftMs : null;
+    const slow = ttftMs !== null && ttftMs > SLOW_TTFA_MS;
+    const payload = {
+      room: roomName,
+      model,
+      turnIndex,
+      ttftMs, // generation start → first audio chunk (perceived response delay)
+      durationMs: m.durationMs,
+      toolExecuted: turnToolExecuted,
+      inputTokens: m.inputTokens,
+      outputTokens: m.outputTokens,
+      slow,
+    };
+    // Always warn on slow turns (prod guardrail); full per-turn stream behind flag.
+    if (slow) {
+      logger.warn(payload, "[Latency] slow turn (>800ms time-to-first-audio)");
+    } else if (latencyDebug) {
+      logger.info(payload, "[Latency] turn");
+    } else {
+      logger.info(
+        { inputTokens: m.inputTokens, outputTokens: m.outputTokens, ttftMs },
+        "[Live] realtime metrics",
+      );
+    }
+    turnToolExecuted = false;
   });
   s.on("session_usage_updated", (ev: any) => {
     logger.info(
@@ -428,7 +479,7 @@ async function runCascadingSession(
     "[Pipeline] session starting",
   );
 
-  const session = buildSession(meta, defaults);
+  const session = await buildSession(meta, defaults);
   const s = session as any;
 
   s.on("user_input_transcribed", (ev: any) => {

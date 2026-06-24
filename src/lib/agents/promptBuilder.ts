@@ -22,6 +22,7 @@ export interface DispatchMetadata {
   liveApiVoice?: string;
   liveApiLanguage?: string;
   liveApiKey?: string;
+  liveApiThinkingLevel?: "minimal" | "low" | "medium" | "high";
   // SIP participant identity — tells the session which participant to track
   // (ignores the observer/control participants the SIP bridge adds first)
   sipParticipantIdentity?: string;
@@ -74,6 +75,8 @@ export function buildDispatchMetadata(
     if (vs?.liveApiModel) meta.liveApiModel = vs.liveApiModel;
     if (vs?.liveApiVoice) meta.liveApiVoice = vs.liveApiVoice;
     if (vs?.liveApiLanguage) meta.liveApiLanguage = vs.liveApiLanguage;
+    if (vs?.liveApiThinkingLevel)
+      meta.liveApiThinkingLevel = vs.liveApiThinkingLevel;
     if (resolvedKeys.liveApiKey) meta.liveApiKey = resolvedKeys.liveApiKey;
   } else {
     // Cascading pipeline: STT → LLM → TTS

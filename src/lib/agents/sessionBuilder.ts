@@ -1,5 +1,7 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { voice, inference } from "@livekit/agents";
+import { ThinkingLevel } from "@google/genai";
+import * as silero from "@livekit/agents-plugin-silero";
 import * as elevenlabs from "@livekit/agents-plugin-elevenlabs";
 import * as deepgram from "@livekit/agents-plugin-deepgram";
 import * as google from "@livekit/agents-plugin-google";
@@ -41,8 +43,62 @@ export interface WorkerDispatchMeta {
   liveApiVoice?: string;
   liveApiKey?: string;
   liveApiLanguage?: string;
+  liveApiThinkingLevel?: "minimal" | "low" | "medium" | "high";
   // SIP call participant identity — routes the session to the right participant
   sipParticipantIdentity?: string;
+}
+
+/**
+ * Loads (and caches) a Silero VAD tuned for telephony turn detection.
+ *
+ * Why: Gemini's server-side VAD cannot honor a short silence window on a noisy
+ * PSTN line — line/comfort noise reads as continuous speech, so end-of-turn is
+ * delayed 4–7s (generation itself fires in ~3ms). We disable the server VAD and
+ * let Silero detect turn boundaries locally; it rejects noise far better and its
+ * `minSilenceDuration` directly controls how fast a turn ends after the caller
+ * stops talking. Env-tunable via LIVE_VAD_SILENCE_MS (default 400ms → sub-second
+ * turns); lower = snappier but risks clipping mid-sentence pauses.
+ */
+let _sileroVad: silero.VAD | undefined;
+async function getTelephonyVad(): Promise<silero.VAD> {
+  if (_sileroVad) return _sileroVad;
+  const silenceMs = Number(process.env.LIVE_VAD_SILENCE_MS ?? 400);
+  _sileroVad = await silero.VAD.load({
+    minSilenceDuration: (Number.isFinite(silenceMs) ? silenceMs : 400) / 1000,
+    minSpeechDuration: 0.05, // catch short replies like "no"/"yeah"
+    activationThreshold: 0.5, // reject low-level line noise
+  });
+  return _sileroVad;
+}
+
+/**
+ * Builds the Live API thinking configuration, model-aware.
+ *
+ * Gemini 3.1 live models use `thinkingLevel` (MINIMAL/LOW/MEDIUM/HIGH);
+ * Gemini 2.5 live models use `thinkingBudget` (0 = disabled, -1 = automatic).
+ * When the agent has not set a level, we default to the latency-optimal floor
+ * (MINIMAL / disabled) so turns are not stalled by an unnecessary thinking pass.
+ */
+function buildThinkingConfig(
+  model: string,
+  level?: "minimal" | "low" | "medium" | "high",
+): { thinkingLevel: ThinkingLevel } | { thinkingBudget: number } | undefined {
+  if (model.includes("3.1")) {
+    const map = {
+      minimal: ThinkingLevel.MINIMAL,
+      low: ThinkingLevel.LOW,
+      medium: ThinkingLevel.MEDIUM,
+      high: ThinkingLevel.HIGH,
+    } as const;
+    return { thinkingLevel: level ? map[level] : ThinkingLevel.MINIMAL };
+  }
+  if (model.includes("2.5")) {
+    // 2.5 native-audio: disable thinking unless the agent explicitly wants more.
+    return { thinkingBudget: level && level !== "minimal" ? -1 : 0 };
+  }
+  // Older models (e.g. gemini-2.0-flash-exp) predate thinking — leave unset to
+  // preserve their default behavior and avoid sending an unsupported param.
+  return undefined;
 }
 
 function buildSTT(model: string, language: string, apiKey?: string) {
@@ -90,15 +146,32 @@ export function buildLiveApiInstructions(
  * When meta.useLiveApi is true, builds a Google Realtime session (no STT/TTS).
  * When false, builds the existing cascading STT → LLM → TTS session.
  */
-export function buildSession(
+export async function buildSession(
   meta: WorkerDispatchMeta,
   defaults: AgentDefaults,
-): voice.AgentSession {
+): Promise<voice.AgentSession> {
   if (meta.useLiveApi === true) {
     const baseInstructions = meta.systemPrompt ?? defaults.systemPrompt;
     const greeting = meta.voiceGreeting ?? defaults.greeting;
+    const liveApiModel =
+      meta.liveApiModel ?? "gemini-live-2.5-flash-native-audio";
+    const thinkingConfig = buildThinkingConfig(
+      liveApiModel,
+      meta.liveApiThinkingLevel,
+    );
+    const vad = await getTelephonyVad();
+    // Diagnostic: confirms this (new) code path runs in the worker. Remove once
+    // latency is locked in.
+    console.log(
+      "[SessionBuilder] live config",
+      JSON.stringify({
+        model: liveApiModel,
+        thinkingConfig,
+        turnDetection: "vad (silero, server VAD disabled)",
+      }),
+    );
     const realtimeModel = new google.beta.realtime.RealtimeModel({
-      model: meta.liveApiModel ?? "gemini-live-2.5-flash-native-audio",
+      model: liveApiModel,
       voice: meta.liveApiVoice ?? "Puck",
       apiKey: meta.liveApiKey ?? process.env.GEMINI_API_KEY,
       instructions: buildLiveApiInstructions(baseInstructions, greeting),
@@ -106,8 +179,21 @@ export function buildSession(
       // Enables user-audio transcription locked to the session language so the
       // caller transcript uses the correct script (e.g. Urdu not Devanagari).
       inputAudioTranscription: {},
+      // Cap reasoning depth per turn. Without this, gemini-3.1-* live runs its
+      // default (non-minimal) thinking pass before every turn. Minimal is the
+      // latency-optimal floor.
+      thinkingConfig,
+      // Disable Gemini's server VAD — it can't honor a short silence window on a
+      // noisy PSTN line. Silero VAD (below) drives turn detection instead.
+      realtimeInputConfig: { automaticActivityDetection: { disabled: true } },
     });
-    return new voice.AgentSession({ llm: realtimeModel });
+    // With server turn detection off + a VAD provided, the framework auto-selects
+    // VAD turn detection and drives Gemini's manual activity signals from Silero.
+    return new voice.AgentSession({
+      llm: realtimeModel,
+      vad,
+      turnDetection: "vad",
+    });
   }
 
   // Cascading pipeline

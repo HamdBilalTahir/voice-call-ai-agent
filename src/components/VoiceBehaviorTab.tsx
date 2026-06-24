@@ -137,6 +137,15 @@ const LIVE_API_MODELS = [
   { value: "gemini-2.0-flash-exp", label: "Gemini 2.0 Flash (Legacy)" },
 ];
 
+// Reasoning depth per turn. Lower = faster time-to-first-audio. Minimal is the
+// recommended default for voice — deeper levels add multi-second latency.
+const LIVE_API_THINKING_LEVELS = [
+  { value: "minimal", label: "Minimal (lowest latency)" },
+  { value: "low", label: "Low" },
+  { value: "medium", label: "Medium" },
+  { value: "high", label: "High" },
+];
+
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 type LlmProvider = "google" | "openai";
@@ -173,6 +182,7 @@ interface FormState {
   liveApiVoice: string;
   liveApiLanguage: string;
   liveApiConfigId: string;
+  liveApiThinkingLevel: "minimal" | "low" | "medium" | "high";
 }
 
 function relativeTime(ts: number): string {
@@ -596,6 +606,7 @@ export function VoiceBehaviorTab({
       liveApiVoice: vs?.liveApiVoice ?? "Puck",
       liveApiLanguage: vs?.liveApiLanguage ?? "",
       liveApiConfigId: vs?.liveApiConfigId ?? "",
+      liveApiThinkingLevel: vs?.liveApiThinkingLevel ?? "minimal",
     };
   };
 
@@ -618,6 +629,7 @@ export function VoiceBehaviorTab({
     liveApiVoice: "Puck",
     liveApiLanguage: "",
     liveApiConfigId: "",
+    liveApiThinkingLevel: "minimal",
   };
 
   const [form, setForm] = useState<FormState>(
@@ -771,6 +783,7 @@ export function VoiceBehaviorTab({
       liveApiVoice: form.liveApiVoice || undefined,
       liveApiLanguage: form.liveApiLanguage || undefined,
       liveApiConfigId: form.liveApiConfigId || undefined,
+      liveApiThinkingLevel: form.liveApiThinkingLevel || undefined,
     };
 
     const userId = user?.uid;
@@ -1006,6 +1019,21 @@ export function VoiceBehaviorTab({
                     value={form.liveApiLanguage}
                     onChange={(v) => set("liveApiLanguage", v)}
                     options={LIVE_API_LANGUAGES}
+                  />
+                </FieldRow>
+                <FieldRow
+                  label="Thinking"
+                  helper="Reasoning depth per turn. Minimal gives the fastest response; higher levels add latency."
+                >
+                  <SelectField
+                    value={form.liveApiThinkingLevel}
+                    onChange={(v) =>
+                      set(
+                        "liveApiThinkingLevel",
+                        v as FormState["liveApiThinkingLevel"],
+                      )
+                    }
+                    options={LIVE_API_THINKING_LEVELS}
                   />
                 </FieldRow>
               </div>

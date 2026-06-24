@@ -1,3 +1,71 @@
+## 🗓️ **2026-06-24**
+
+---
+
+### ⚡ Performance
+
+---
+
+> ### Gemini Live — Sub-Second Turn Latency (Local Silero VAD Turn Detection)
+>
+> - **What changed:** Replaced Gemini's server-side VAD with a local **Silero VAD** for end-of-turn detection on the Live API pipeline. The `RealtimeModel` now **disables** Gemini's automatic activity detection (`realtimeInputConfig.automaticActivityDetection.disabled`), and a Silero VAD (`@livekit/agents-plugin-silero`) is attached to the `AgentSession` with `turnDetection: "vad"`, tuned for telephony: `minSilenceDuration` 400ms (env-tunable via `LIVE_VAD_SILENCE_MS`), `activationThreshold` 0.5 (rejects line noise), `minSpeechDuration` 50ms (still catches "no"/"yeah"). The model-aware `thinkingConfig` is also set (`thinkingLevel: MINIMAL` for gemini-3.1-\* live, `thinkingBudget: 0` for 2.5) as a latency safeguard. Added per-turn latency instrumentation in the worker (`ttftMs` + slow-turn warnings, gated by `LIVE_LATENCY_DEBUG`; tool-execution and error/throttling correlation). `buildSession` is now async to load the VAD.
+> - **Why:** Turn-to-turn latency was 5–10s. Instrumentation proved generation was instant (`ttftMs` ~3ms) — the entire delay was end-of-turn detection. Gemini's server VAD cannot honor a short silence window on a noisy PSTN line: line/comfort noise reads as continuous speech (the greeting was even held ~4s by phantom "speech"), so `silenceDurationMs` never fired. Silero rejects line noise and its `minSilenceDuration` directly bounds the gap, bringing turns under a second.
+> - **Files:**
+>   - `src/lib/agents/sessionBuilder.ts` _(Silero VAD loader, server VAD disabled, model-aware thinkingConfig, async buildSession)_
+>   - `src/lib/agents/genericEntry.ts` _(await buildSession; per-turn latency / tool / error-throttling logging)_
+>   - `package.json` _(declare @google/genai for the ThinkingLevel enum)_
+
+---
+
+### ✨ Features
+
+---
+
+> ### Voice & Behavior — Per-Agent Live API Thinking Level
+>
+> - **What changed:** Added a **Thinking** dropdown (Minimal / Low / Medium / High, default **Minimal**) to the Gemini Live section of the Voice & Behavior tab, plumbed end-to-end as `liveApiThinkingLevel` (Firestore `voiceSettings` + zod, dispatch metadata, worker). It maps to `thinkingLevel` for gemini-3.1-\* live models and `thinkingBudget` for 2.5; when unset the worker applies the latency-optimal default.
+> - **Why:** Lets an individual agent trade latency for deeper reasoning without a code change, while keeping Minimal as the snappy default for voice.
+> - **Files:**
+>   - `src/components/VoiceBehaviorTab.tsx`, `src/lib/firebase/agents.ts`, `src/app/api/agents/route.ts`, `src/lib/agents/promptBuilder.ts`, `src/app/api/calls/outbound/route.ts`, `src/lib/agents/sessionBuilder.ts`
+
+---
+
+### 🐛 Fixes
+
+---
+
+> ### Playground Call Modal — End Call Now Hangs Up the Live PSTN Call
+>
+> - **What changed:** Added `POST /api/calls/[roomName]/hangup`, which deletes the LiveKit room (evicting the SIP participant so the bridge sends Twilio CANCEL while ringing / BYE once answered) and marks the call record completed. The modal's **End** button now calls it; previously it only disconnected the dashboard observer, leaving the real call ringing. End also works **while the call is still ringing** (button enabled during dialing/ringing, labelled "Cancel"), in a single click — the old two-step "End call? End / Cancel" confirm was removed — and closing the modal on a live call now hangs it up instead of orphaning it.
+> - **Why:** Ending the call in the UI didn't terminate the actual phone call — it kept ringing (and billing), and a ringing call couldn't be cancelled at all.
+> - **Files:**
+>   - `src/app/api/calls/[roomName]/hangup/route.ts` _(new — deleteRoom + mark completed)_
+>   - `src/components/TestCallModal.tsx` _(endCall hits hangup endpoint; End enabled during ringing; one-click; close-hangs-up)_
+
+---
+
+### 💅 Styling and UI Improvements
+
+---
+
+> ### Playground Call Modal — Honest Dialing → Ringing → Connected Status & Cleaner Controls
+>
+> - **What changed:** Call status is now driven by the SIP participant's real `sip.callStatus` (`dialing` → `ringing` → `active`) instead of a fixed 2-second client timer that flipped to "Ringing" regardless of the real call. The control bar's disabled Mute / Hold / Take-over placeholder cluster was replaced with a single prominent rounded **End call / Cancel** button, and the post-call "Done" button was enlarged (full-width, taller) so it's easy to hit.
+> - **Why:** The modal confidently showed "Ringing" on a timer even when the carrier never delivered the call (it was still in `dialing`), which was misleading during debugging; the disabled placeholder buttons cluttered the UI and the tiny Done button was hard to tap.
+> - **Files:**
+>   - `src/components/TestCallModal.tsx` _(applyCallStatus maps real sip.callStatus; removed 2s ringing timer; single End/Cancel button; larger CallNotAnswered button)_
+
+---
+
+> ### Post-Call Transcript — Fills Modal Height and Scrolls Independently
+>
+> - **What changed:** The "Full Transcript" panel in the post-call summary no longer caps at a fixed ~176px (`max-h-44`). It now uses `flex-1 min-h-0` to fill the remaining modal height with its own scroll region, while the summary / key-points / action-items block above is capped at `max-h-[45%]` and scrolls on its own — so neither section crowds the other. Line text was bumped from `text-xs` to `text-sm` with more padding (`p-4`) and spacing (`space-y-3`), and each turn now shows a colored uppercase speaker label (Agent in primary, Caller in green) matching the live-transcript styling.
+> - **Why:** With only a few lines, the old fixed-height box left a large empty gap below it (visible in the post-call view), and long transcripts were squeezed into a tiny scroll area. The transcript is the primary artifact of the call, so it should own the available space and be comfortable to read.
+> - **Files:**
+>   - `src/components/TestCallModal.tsx` _(PostCallSummary: summary region capped + scrollable, transcript grows with flex-1, larger type, per-turn speaker labels)_
+
+---
+
 ## 🗓️ **2026-06-23**
 
 ---

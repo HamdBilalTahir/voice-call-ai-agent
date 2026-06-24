@@ -132,6 +132,7 @@ export async function POST(req: Request) {
           liveApiModel: agentData?.voiceSettings?.liveApiModel,
           liveApiVoice: agentData?.voiceSettings?.liveApiVoice,
           liveApiConfigId: agentData?.voiceSettings?.liveApiConfigId,
+          liveApiThinkingLevel: agentData?.voiceSettings?.liveApiThinkingLevel,
           userId: agentData?.userId,
         });
         if (agentData) {
@@ -216,6 +217,7 @@ export async function POST(req: Request) {
           useLiveApi: parsedMeta.useLiveApi,
           liveApiModel: parsedMeta.liveApiModel,
           liveApiVoice: parsedMeta.liveApiVoice,
+          liveApiThinkingLevel: parsedMeta.liveApiThinkingLevel,
           hasLiveApiKey: !!parsedMeta.liveApiKey,
           hasSystemPrompt: !!parsedMeta.systemPrompt,
           systemPromptLen: parsedMeta.systemPrompt?.length,

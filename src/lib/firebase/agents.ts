@@ -91,6 +91,9 @@ export interface VoiceSettings {
   liveApiVoice?: string;
   liveApiLanguage?: string;
   liveApiConfigId?: string;
+  // Reasoning depth for the Live API turn. Lower = faster time-to-first-audio.
+  // When unset, sessionBuilder applies a model-aware default (minimal).
+  liveApiThinkingLevel?: "minimal" | "low" | "medium" | "high";
 }
 
 /** Raw Firestore document shape — unknown extra fields are preserved via index sig */
@@ -207,6 +210,9 @@ const VoiceSettingsWriteSchema = z
     liveApiVoice: z.string().min(1).max(100).optional(),
     liveApiLanguage: z.string().max(20).optional(),
     liveApiConfigId: z.string().min(1).max(128).optional(),
+    liveApiThinkingLevel: z
+      .enum(["minimal", "low", "medium", "high"])
+      .optional(),
   })
   .strict();
 
